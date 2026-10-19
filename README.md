@@ -60,6 +60,140 @@ The CGI invokes IPFire's native `/usr/local/bin/redctrl` command. A `connect` ac
 
 For compatibility with existing clients, the CGI also accepts the legacy `X-HA-IPFire-API: 1` header.
 
+### System parameters
+
+The `system` section provides the following information:
+
+| Parameter | Description |
+| --- | --- |
+| `version` | IPFire version |
+| `pakfire_version` | Pakfire version |
+| `kernel_version` | Linux kernel version |
+| `architecture` | System architecture |
+| `cpu_model` | CPU model |
+| `cpu_count` | Number of CPU cores |
+| `model` | System model |
+| `vendor` | System vendor |
+| `virtual` | Whether the system is virtualized |
+| `core_update` | Whether an IPFire core update is available |
+| `package_updates` | Number of available package updates |
+| `uptime` | System uptime in seconds |
+
+#### CPU
+
+| Parameter | Description |
+| --- | --- |
+| `total` | Accumulated CPU time |
+| `idle` | Accumulated CPU idle time |
+
+#### Memory
+
+| Parameter | Description |
+| --- | --- |
+| `total` | Total physical memory in bytes |
+| `available` | Available memory in bytes |
+| `free` | Free memory in bytes |
+| `buffers` | Memory used for buffers in bytes |
+| `cached` | Memory used for cache in bytes |
+
+#### Disk
+
+Root filesystem space information is provided under `disk.root`.
+
+| Parameter | Description |
+| --- | --- |
+| `total` | Total disk space in bytes |
+| `used` | Used disk space in bytes |
+| `available` | Available disk space in bytes |
+| `use_percent` | Disk usage in percent |
+
+I/O statistics for the `sda` device are provided under `disk.sda`.
+
+| Parameter | Description |
+| --- | --- |
+| `reads` | Number of completed read operations |
+| `sectors_read` | Number of sectors read |
+| `writes` | Number of completed write operations |
+| `sectors_written` | Number of sectors written |
+| `io_in_progress` | Number of I/O operations currently in progress |
+| `io_time` | Time spent performing I/O operations |
+
+#### SMART
+
+SMART information is provided for the system disk.
+
+| Parameter | Description |
+| --- | --- |
+| `power_on_hours` | Disk power-on hours |
+| `remaining_lifetime` | Remaining disk lifetime in percent |
+| `health` | SMART health status |
+| `errors` | SMART error count |
+| `uncorrectable_errors` | Number of uncorrectable errors |
+| `power_cycles` | Number of power cycles |
+| `temperature` | Disk temperature |
+
+### Network
+
+The `network` section provides the current state of the IPFire network interfaces.
+
+| Parameter | Description |
+| --- | --- |
+| `blue` | State of the BLUE network interface |
+| `green` | State of the GREEN network interface |
+| `orange` | State of the ORANGE network interface |
+| `red` | State of the RED network interface |
+
+Values are boolean:
+
+* `true` – the interface is active
+* `false` – the interface is inactive
+
+### Services
+
+The `services` section provides the current status of services managed by IPFire.
+
+| Parameter | Description |
+| --- | --- |
+| `dhcp` | DHCP server status |
+| `web_server` | IPFire web server status |
+| `cron` | Cron service status |
+| `dns_resolver` | DNS resolver status |
+| `logging` | Logging service status |
+| `ntp` | NTP service status |
+| `ssh` | SSH service status |
+| `vpn` | VPN service status |
+| `web_proxy` | Web proxy status |
+| `ips` | Intrusion Prevention System (IPS) status |
+| `ovpn_roadwarrior` | OpenVPN Roadwarrior status |
+| `lldp` | LLDP service status |
+| `dbus` | D-Bus service status |
+
+Values are boolean:
+
+* `true` – the service is running
+* `false` – the service is not running
+
+### Add-ons
+
+The `addons` section provides the current status of supported IPFire add-ons. For example, an add-on status is represented as:
+
+| Parameter | Description |
+| --- | --- |
+| `transmission.running` | Whether the Transmission add-on is running |
+
+Values are boolean: `true` means the add-on is running; `false` means it is not running. Transmission is an example; the section can provide status information for other supported add-ons.
+
+### Updates
+
+The `system` section also provides information about available IPFire updates.
+
+| Parameter | Description |
+| --- | --- |
+| `core_update` | Whether an IPFire core update is available |
+| `package_updates` | Number of available package updates |
+
+`core_update` is boolean. `package_updates` is the number of available package updates.
+
 ## Security
 
 Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. `POST` requests can change the internet connection state.
