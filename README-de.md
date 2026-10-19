@@ -2,13 +2,13 @@
 
 [English](README.md)
 
-IPFire-API ist eine CGI-basierte API-Erweiterung für IPFire. Sie stellt ausgewählte System-, Netzwerk-, Dienst-, Add-on-, Traffic- und Verbindungsinformationen als JSON bereit und kann die RED-Internetverbindung steuern. Das Ziel des Projekt ist es, viele sinnvolle Informationen und Funktionen zur Verfügung zu stellen.
+IPFire-API ist eine CGI-basierte API-Erweiterung für IPFire. Sie stellt ausgewählte System-, Netzwerk-, Dienst-, Add-on-, USV-, Traffic- und Verbindungsinformationen als JSON bereit und kann die RED-Internetverbindung steuern. Das Ziel des Projekt ist es, viele sinnvolle Informationen und Funktionen zur Verfügung zu stellen.
 
 Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://github.com/FMainz/HA-IPFire). Mit der separaten Entwicklung soll eine allgemeingültige API geschaffen werden, die Integrationen und anderen Clients die selbe offene standadisierte Schnittstelle zur Verfügung stellt.
 
 ## Funktionen
 
-- Informationen zu System, CPU, Arbeitsspeicher, Festplatte und SMART
+- Informationen zu System, CPU, Arbeitsspeicher, Festplatte, SMART, USV und Zertifikaten
 - Status der Netzwerkschnittstellen und IPFire-Dienste
 - Status unterstützter Add-ons
 - Traffic-Zähler der RED-Schnittstelle
@@ -41,7 +41,7 @@ Der Endpunkt lautet:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `services`, `addons`, `traffic` und `connection`. Nicht verfügbare Messwerte werden, sofern zutreffend, als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `services`, `addons`, `ups`, `traffic`, `connection` und `certificates`. Nicht verfügbare Messwerte werden, sofern zutreffend, als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
 
 ### Verbindungssteuerung
 
@@ -135,19 +135,39 @@ SMART-Informationen werden für die Systemfestplatte bereitgestellt.
 
 ### Netzwerk
 
-Der Abschnitt `network` stellt den aktuellen Status der IPFire-Netzwerkschnittstellen bereit.
+Der Abschnitt `network` meldet die konfigurierten IPFire-Netzwerkzonen und Informationen zu den zugeordneten Geräten. Die booleschen Zonenwerte zeigen an, ob eine Zone im IPFire-Hardwareprofil vorhanden ist. Sie geben nicht den aktuellen physischen Linkstatus an.
 
 | Parameter | Beschreibung |
 | --- | --- |
-| `blue` | Status der BLUE-Netzwerkschnittstelle |
-| `green` | Status der GREEN-Netzwerkschnittstelle |
-| `orange` | Status der ORANGE-Netzwerkschnittstelle |
-| `red` | Status der RED-Netzwerkschnittstelle |
+| `blue` | Gibt an, ob die BLUE-Zone im Hardwareprofil vorhanden ist |
+| `green` | Gibt an, ob die GREEN-Zone im Hardwareprofil vorhanden ist |
+| `orange` | Gibt an, ob die ORANGE-Zone im Hardwareprofil vorhanden ist |
+| `red` | Gibt an, ob die RED-Zone im Hardwareprofil vorhanden ist |
 
 Die Werte sind boolesch:
 
-* `true` – die Schnittstelle ist aktiv
-* `false` – die Schnittstelle ist inaktiv
+* `true` – die Zone ist vorhanden
+* `false` – die Zone ist nicht vorhanden
+
+Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFire-Schnittstelleneinstellungen und von `ethtool`:
+
+| Parameter | Beschreibung |
+| --- | --- |
+| `device` | Der Linux-Netzwerkname des der Zone zugeordneten Geräts |
+| `driver` | Name des Netzwerktreibers |
+| `driver_version` | Von `ethtool` gemeldete Treiberversion |
+| `firmware_version` | Von `ethtool` gemeldete Firmwareversion |
+| `supported_link_modes` | Vom Gerät und Treiber unterstützte Verbindungsmodi |
+| `max_supported_speed_mbps` | Höchste Geschwindigkeit der unterstützten Verbindungsmodi |
+| `advertised_link_modes` | Für die automatische Aushandlung angebotene Verbindungsmodi |
+| `link_partner_advertised_link_modes` | Von der Gegenstelle angebotene Modi, falls gemeldet |
+| `supports_auto_negotiation` | Gibt an, ob das Gerät automatische Aushandlung unterstützt |
+| `auto_negotiation` | Gibt an, ob automatische Aushandlung aktiviert ist |
+| `speed_mbps` | Aktuell ausgehandelte Verbindungsgeschwindigkeit in Mbit/s |
+| `duplex` | Aktuell ausgehandelter Duplexmodus |
+| `link_detected` | Gibt an, ob ein physischer Link erkannt wird |
+
+Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
 
 ### Dienste
 
@@ -190,6 +210,54 @@ Der Wert ist boolesch:
 * `false` – das Add-on läuft nicht
 
 Transmission dient hier nur als Beispiel. Der Abschnitt `addons` kann auch Statusinformationen zu anderen unterstützten Add-ons bereitstellen.
+
+### USV
+
+Das Objekt `ups.apcupsd` wird nur ausgegeben, wenn das optionale IPFire-Add-on `apcupsd` installiert ist. Die Daten werden über den Befehl `apcaccess status` ausgelesen. Kann der Befehl keinen Statusbericht liefern, lautet `status` `unavailable` und die Messwerte sind `null`.
+
+| Parameter | Beschreibung |
+| --- | --- |
+| `status` | Von apcupsd gemeldeter USV-Status, zum Beispiel `ONLINE`, `ONBATT` oder `COMMLOST` |
+| `battery_charge_percent` | Batterieladung in Prozent (`BCHARGE`) |
+| `runtime_minutes` | Geschätzte verbleibende Laufzeit in Minuten (`TIMELEFT`) |
+| `load_percent` | Aktuelle USV-Last in Prozent (`LOADPCT`) |
+| `model` | Von apcupsd gemeldetes USV-Modell |
+| `ups_name` | Konfigurierter Name der USV |
+
+Welche Werte verfügbar sind, hängt von USV und Treiber ab. Die Daten konnten noch nicht mit jeder unterstützten USV geprüft werden.
+
+### Zertifikate
+
+Der Abschnitt `certificates` liefert Informationen zum Zertifikat, das Apache für die IPFire-Weboberfläche auf Port `444` ausgibt, sowie zu den von IPFire verwalteten OpenVPN-Clientzertifikaten. Die API liest das Apache-Zertifikat lokal über TLS aus. Das Ablaufdatum entspricht damit dem tatsächlich aktiven Zertifikat, auch wenn es von einem externen Werkzeug wie einem ACME-Client verwaltet wird. OpenVPN-Einträge werden aus der Zertifikatsdatenbank von IPFire gelesen; das OpenVPN-Serverzertifikat wird aus der Clientliste ausgeschlossen.
+
+| Parameter | Beschreibung |
+| --- | --- |
+| `apache.status` | `valid`, `expired` oder `unavailable` |
+| `apache.subject` | Zertifikatsinhaber |
+| `apache.issuer` | Zertifikatsaussteller |
+| `apache.not_before` | Beginn der Gültigkeit laut OpenSSL |
+| `apache.not_after` | Ablaufdatum in UTC im ISO-8601-Format |
+| `apache.remaining.years` | Verbleibende volle Kalenderjahre |
+| `apache.remaining.months` | Zusätzlich verbleibende volle Kalendermonate |
+| `apache.remaining.days` | Zusätzlich verbleibende Kalendertage |
+| `apache.remaining_days` | Insgesamt verbleibende volle Tage |
+
+Kann das Apache-Zertifikat nicht ausgelesen werden, lautet `status` `unavailable` und die Zertifikatsdetails sind `null`. Bei einem abgelaufenen Zertifikat stehen die verbleibenden Zähler auf null.
+
+OpenVPN-Clientzertifikate werden als Array unter `openvpn.clients` ausgegeben. Jeder Eintrag enthält:
+
+| Parameter | Beschreibung |
+| --- | --- |
+| `common_name` | Common Name des Zertifikats |
+| `serial` | Seriennummer des Zertifikats |
+| `status` | `valid`, `expired`, `revoked` oder `unknown` |
+| `not_after` | Ablaufdatum in UTC im ISO-8601-Format |
+| `remaining.years` | Verbleibende volle Kalenderjahre |
+| `remaining.months` | Zusätzlich verbleibende volle Kalendermonate |
+| `remaining.days` | Zusätzlich verbleibende Kalendertage |
+| `remaining_days` | Insgesamt verbleibende volle Tage |
+
+Ein leeres Array bedeutet, dass keine OpenVPN-Clientzertifikate vorhanden sind. Kann die OpenVPN-Zertifikatsdatenbank oder das Serverzertifikat nicht gelesen werden, ist `openvpn.clients` gleich `null`.
 
 ### Updates
 

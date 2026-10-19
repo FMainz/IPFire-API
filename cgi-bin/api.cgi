@@ -5,7 +5,7 @@
 #                                                                             #
 # IPFire API                                                                  #
 #                                                                             #
-# This CGI provides system, network, service, add-on, traffic, and            #
+# This CGI provides system, network, service, add-on, UPS, traffic, and       #
 # connection information from IPFire for integrations and other clients.      #
 #                                                                             #
 ###############################################################################
@@ -16,6 +16,7 @@ use warnings;
 require '/var/ipfire/general-functions.pl';
 require "/opt/pakfire/lib/functions.pl";
 use JSON::PP;
+use Time::Local qw(timegm);
 
 my $api_version = "1";
 
@@ -165,6 +166,198 @@ sub uptime_data {
     return undef unless $uptime =~ /^\d+(?:\.\d+)?$/;
 
     return int($uptime);
+}
+
+sub apache_certificate_data {
+    my %result = (
+        'status' => 'unavailable',
+        'subject' => undef,
+        'issuer' => undef,
+        'not_before' => undef,
+        'not_after' => undef,
+        'remaining' => undef,
+        'remaining_days' => undef,
+    );
+
+    # Query the certificate Apache actually presents on the IPFire WUI port.
+    # This also works when the certificate is managed outside IPFire's default
+    # certificate paths, for example by an ACME client.
+    open(my $fh, '-|',
+        'openssl s_client -connect 127.0.0.1:444 -noservername </dev/null'
+        . ' 2>/dev/null | openssl x509 -noout -subject -issuer -startdate -enddate'
+    ) or return %result;
+
+    my %certificate;
+    while (my $line = <$fh>) {
+        if ($line =~ /^(subject|issuer|notBefore|notAfter)=(.*)$/) {
+            $certificate{$1} = $2;
+        }
+    }
+    close($fh);
+
+    return %result unless defined $certificate{'notAfter'};
+
+    my %months = (
+        Jan => 0, Feb => 1, Mar => 2, Apr => 3, May => 4, Jun => 5,
+        Jul => 6, Aug => 7, Sep => 8, Oct => 9, Nov => 10, Dec => 11,
+    );
+    my ($month, $day, $hour, $minute, $second, $year) =
+        $certificate{'notAfter'} =~ /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})\s+GMT$/;
+
+    return %result unless defined $year && exists $months{$month};
+
+    my $expires = eval {
+        timegm($second, $minute, $hour, $day, $months{$month}, $year);
+    };
+    return %result unless defined $expires;
+
+    my $now = time();
+    my $not_after = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
+        $year, $months{$month} + 1, $day, $hour, $minute, $second);
+
+    $result{'status'} = ($expires > $now) ? 'valid' : 'expired';
+    $result{'subject'} = $certificate{'subject'};
+    $result{'issuer'} = $certificate{'issuer'};
+    $result{'not_before'} = $certificate{'notBefore'};
+    $result{'not_after'} = $not_after;
+
+    my ($remaining, $remaining_days) = remaining_time_data($expires);
+    $result{'remaining'} = $remaining;
+    $result{'remaining_days'} = $remaining_days;
+
+    return %result;
+}
+
+sub parse_ca_expiry {
+    my ($value) = @_;
+    return unless defined $value;
+
+    my ($year, $month, $day, $hour, $minute, $second);
+    if ($value =~ /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/) {
+        ($year, $month, $day, $hour, $minute, $second) =
+            ($1, $2, $3, $4, $5, $6);
+    } elsif ($value =~ /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/) {
+        ($year, $month, $day, $hour, $minute, $second) =
+            ($1, $2, $3, $4, $5, $6);
+        $year += ($year < 50) ? 2000 : 1900;
+    } else {
+        return;
+    }
+
+    my $epoch = eval {
+        timegm($second, $minute, $hour, $day, $month - 1, $year);
+    };
+    return unless defined $epoch;
+
+    return (
+        $epoch,
+        sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
+            $year, $month, $day, $hour, $minute, $second),
+    );
+}
+
+sub remaining_time_data {
+    my ($expires) = @_;
+    return ({ 'years' => 0, 'months' => 0, 'days' => 0 }, 0)
+        unless defined $expires && $expires > time();
+
+    my @now_parts = gmtime(time());
+    my @expiry_parts = gmtime($expires);
+    my ($day, $month, $year) = @now_parts[3, 4, 5];
+    my ($exp_day, $exp_month, $exp_year) = @expiry_parts[3, 4, 5];
+    my $years = $exp_year - $year;
+    my $remaining_months = $exp_month - $month;
+    my $days = $exp_day - $day;
+
+    my $now_time = $now_parts[2] * 3600 + $now_parts[1] * 60 + $now_parts[0];
+    my $expiry_time = $expiry_parts[2] * 3600
+        + $expiry_parts[1] * 60 + $expiry_parts[0];
+    $days-- if $expiry_time < $now_time;
+
+    if ($days < 0) {
+        $remaining_months--;
+        my $previous_month = ($exp_month + 11) % 12;
+        my $previous_year = $exp_year - ($exp_month == 0 ? 1 : 0);
+        my @month_days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31);
+        my $leap = ($previous_year % 4 == 0)
+            && (($previous_year % 100 != 0) || ($previous_year % 400 == 0));
+        $month_days[1] = 29 if $leap;
+        $days += $month_days[$previous_month];
+    }
+    if ($remaining_months < 0) {
+        $years--;
+        $remaining_months += 12;
+    }
+
+    return (
+        {
+            'years' => $years,
+            'months' => $remaining_months,
+            'days' => $days,
+        },
+        int(($expires - time()) / 86400),
+    );
+}
+
+sub openvpn_client_certificates_data {
+    my $index_file = '/var/ipfire/ovpn/certs/index.txt';
+    my $server_cert = '/var/ipfire/ovpn/certs/servercert.pem';
+
+    # The index contains the server certificate as well as any client or
+    # site-to-site certificates. Identify the server by serial so it is not
+    # reported as a client certificate.
+    open(my $serial_fh, '-|', 'openssl', 'x509', '-in', $server_cert, '-noout', '-serial')
+        or return undef;
+    my $serial_line = <$serial_fh>;
+    close($serial_fh);
+    return undef unless defined $serial_line && $serial_line =~ /^serial=([0-9A-Fa-f]+)\s*$/;
+    my $server_serial = uc($1);
+    $server_serial =~ s/^0+//;
+    $server_serial = '0' unless length $server_serial;
+
+    open(my $index_fh, '<', $index_file) or return undef;
+    my @clients;
+
+    while (my $line = <$index_fh>) {
+        chomp $line;
+        my @fields = split(/\t/, $line, 6);
+        next unless @fields >= 6;
+
+        my $ca_status = $fields[0];
+        my $expiry = $fields[1];
+        my $serial = $fields[3];
+        my $subject = $fields[5];
+        next unless defined $serial && defined $subject;
+        my $normalized_serial = uc($serial);
+        $normalized_serial =~ s/^0+//;
+        $normalized_serial = '0' unless length $normalized_serial;
+        next if $normalized_serial eq $server_serial;
+
+        my ($common_name) = $subject =~ m{(?:^|/)CN=([^/]+)};
+        next unless defined $common_name;
+        $common_name =~ s/\\\//\//g;
+
+        my ($expires, $not_after) = parse_ca_expiry($expiry);
+        next unless defined $expires;
+
+        my $status = $ca_status eq 'R' ? 'revoked'
+            : ($ca_status eq 'E' || $expires <= time()) ? 'expired'
+            : $ca_status eq 'V' ? 'valid'
+            : 'unknown';
+        my ($remaining, $remaining_days) = remaining_time_data($expires);
+
+        push @clients, {
+            'common_name' => $common_name,
+            'serial' => $serial,
+            'status' => $status,
+            'not_after' => $not_after,
+            'remaining' => $remaining,
+            'remaining_days' => $remaining_days,
+        };
+    }
+
+    close($index_fh);
+    return \@clients;
 }
 
 sub disk_data {
@@ -370,6 +563,147 @@ sub fireinfo_data {
     );
 }
 
+sub network_interface_data {
+    my ($device) = @_;
+    return undef unless defined $device && $device =~ /^[A-Za-z0-9_.:-]+$/;
+    return undef unless -e "/sys/class/net/$device";
+
+    my %data = (
+        'device' => $device,
+        'driver' => undef,
+        'driver_version' => undef,
+        'firmware_version' => undef,
+        'supported_link_modes' => undef,
+        'max_supported_speed_mbps' => undef,
+        'advertised_link_modes' => undef,
+        'link_partner_advertised_link_modes' => undef,
+        'supports_auto_negotiation' => undef,
+        'auto_negotiation' => undef,
+        'speed_mbps' => undef,
+        'duplex' => undef,
+        'link_detected' => undef,
+    );
+
+    my %mode_keys = (
+        'Supported link modes' => 'supported_link_modes',
+        'Advertised link modes' => 'advertised_link_modes',
+        'Link partner advertised link modes' => 'link_partner_advertised_link_modes',
+    );
+    my $current_modes;
+
+    if (open(my $fh, '-|', '/usr/sbin/ethtool', $device)) {
+        while (my $line = <$fh>) {
+            if ($line =~ /^\s*(Supported link modes|Advertised link modes|Link partner advertised link modes):\s*(.*)$/) {
+                $current_modes = $mode_keys{$1};
+                $data{$current_modes} = [] unless ref($data{$current_modes}) eq 'ARRAY';
+                my @modes = grep { /^\d+base\S+\/(?:Half|Full)$/ } split(/\s+/, $2);
+                push @{$data{$current_modes}}, @modes;
+                next;
+            }
+
+            if (defined $current_modes) {
+                my $continuation = $line;
+                $continuation =~ s/^\s+|\s+$//g;
+                if ($continuation =~ /^\d+base/) {
+                    my @modes = grep { /^\d+base\S+\/(?:Half|Full)$/ } split(/\s+/, $continuation);
+                    push @{$data{$current_modes}}, @modes;
+                    next;
+                }
+                $current_modes = undef;
+            }
+
+            if ($line =~ /^\s*Supports auto-negotiation:\s*(Yes|No)/i) {
+                $data{'supports_auto_negotiation'} = lc($1) eq 'yes' ? JSON::PP::true() : JSON::PP::false();
+            } elsif ($line =~ /^\s*Auto-negotiation:\s*(on|off)/i) {
+                $data{'auto_negotiation'} = lc($1) eq 'on' ? JSON::PP::true() : JSON::PP::false();
+            } elsif ($line =~ /^\s*Speed:\s*(\d+)\s*Mb\/s/i) {
+                $data{'speed_mbps'} = int($1);
+            } elsif ($line =~ /^\s*Duplex:\s*(Half|Full)/i) {
+                $data{'duplex'} = lc($1);
+            } elsif ($line =~ /^\s*Link detected:\s*(yes|no)/i) {
+                $data{'link_detected'} = lc($1) eq 'yes' ? JSON::PP::true() : JSON::PP::false();
+            }
+        }
+        close($fh);
+    }
+
+    if (open(my $fh, '-|', '/usr/sbin/ethtool', '-i', $device)) {
+        while (my $line = <$fh>) {
+            $data{'driver'} = $1 if $line =~ /^driver:\s*(\S+)/;
+            $data{'driver_version'} = $1 if $line =~ /^version:\s*(\S+)/;
+            if ($line =~ /^firmware-version:\s*(.*?)\s*$/) {
+                $data{'firmware_version'} = length($1) ? $1 : undef;
+            }
+        }
+        close($fh);
+    }
+
+    if (ref($data{'supported_link_modes'}) eq 'ARRAY') {
+        my $max_speed;
+        foreach my $mode (@{$data{'supported_link_modes'}}) {
+            my ($speed) = $mode =~ /^(\d+)base/;
+            $max_speed = $speed if defined $speed && (!defined $max_speed || $speed > $max_speed);
+        }
+        $data{'max_supported_speed_mbps'} = int($max_speed) if defined $max_speed;
+    }
+
+    return \%data;
+}
+
+sub network_interfaces_data {
+    my %settings;
+    &General::readhash("${General::swroot}/ethernet/settings", \%settings);
+
+    my %interfaces;
+    foreach my $zone (qw(red green orange blue)) {
+        my $device = $settings{uc($zone) . '_DEV'};
+        $interfaces{$zone} = network_interface_data($device);
+    }
+
+    return \%interfaces;
+}
+
+sub apcupsd_data {
+    my @candidates = qw(/usr/sbin/apcaccess /sbin/apcaccess /usr/bin/apcaccess);
+    my ($apcaccess) = grep { -x $_ } @candidates;
+
+    # The optional add-on is omitted from the response when it is not installed.
+    return undef unless defined $apcaccess;
+
+    my %data = (
+        'status' => 'unavailable',
+        'battery_charge_percent' => undef,
+        'runtime_minutes' => undef,
+        'load_percent' => undef,
+        'model' => undef,
+        'ups_name' => undef,
+    );
+
+    if (open(my $fh, '-|', $apcaccess, 'status')) {
+        while (my $line = <$fh>) {
+            if ($line =~ /^STATUS\s*:\s*(.*?)\s*$/) {
+                $data{'status'} = $1;
+            } elsif ($line =~ /^BCHARGE\s*:\s*([\d.]+)\s+Percent/i) {
+                $data{'battery_charge_percent'} = 0 + $1;
+            } elsif ($line =~ /^TIMELEFT\s*:\s*([\d.]+)\s+Minutes/i) {
+                $data{'runtime_minutes'} = 0 + $1;
+            } elsif ($line =~ /^LOADPCT\s*:\s*([\d.]+)\s+Percent/i) {
+                $data{'load_percent'} = 0 + $1;
+            } elsif ($line =~ /^MODEL\s*:\s*(.*?)\s*$/) {
+                $data{'model'} = $1;
+            } elsif ($line =~ /^UPSNAME\s*:\s*(.*?)\s*$/) {
+                $data{'ups_name'} = $1;
+            }
+        }
+        close($fh);
+
+        # A status line confirms that apcupsd returned a usable report. If it
+        # did not, retain "unavailable" and the null measurements above.
+    }
+
+    return \%data;
+}
+
 sub services_data {
     my %services = (
         'dhcp' => {
@@ -472,6 +806,8 @@ my ($version, $core_update, $package_updates) = system_data();
 my ($rx_bytes, $tx_bytes) = traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
 my $uptime = uptime_data();
+my %apache_certificate = apache_certificate_data();
+my $openvpn_client_certificates = openvpn_client_certificates_data();
 my $smart = smart_data();
 
 my ($memory_total,
@@ -517,6 +853,8 @@ chomp($kernel_release);
 
 my %services = services_data();
 my %addons = addons_data();
+my $network_interfaces = network_interfaces_data();
+my $apcupsd = apcupsd_data();
 
 # -----------------------------------------------------------------------------
 # HTTP response
@@ -688,6 +1026,59 @@ if ($external_ip ne '') {
 my @json;
 push @json, '"api_version":'.$api_version;
 
+my @apache_certificate_json;
+foreach my $key (qw(status subject issuer not_before not_after remaining_days)) {
+    my $value = $apache_certificate{$key};
+    push @apache_certificate_json,
+        json_string($key) . ':'
+        . (defined $value
+            ? ($key eq 'remaining_days' ? $value : json_string($value))
+            : 'null');
+}
+my $remaining = $apache_certificate{'remaining'};
+my $remaining_json = defined $remaining
+    ? '{"years":'.$remaining->{'years'}
+        . ',"months":'.$remaining->{'months'}
+        . ',"days":'.$remaining->{'days'}.'}'
+    : 'null';
+push @apache_certificate_json, '"remaining":'.$remaining_json;
+
+my $openvpn_clients_json = 'null';
+if (defined $openvpn_client_certificates) {
+    my @openvpn_clients;
+    foreach my $client (@{$openvpn_client_certificates}) {
+        push @openvpn_clients,
+            '{"common_name":' . json_string($client->{'common_name'})
+            . ',"serial":' . json_string($client->{'serial'})
+            . ',"status":' . json_string($client->{'status'})
+            . ',"not_after":' . json_string($client->{'not_after'})
+            . ',"remaining_days":' . $client->{'remaining_days'}
+            . ',"remaining":{"years":' . $client->{'remaining'}{'years'}
+            . ',"months":' . $client->{'remaining'}{'months'}
+            . ',"days":' . $client->{'remaining'}{'days'} . '}}';
+    }
+    $openvpn_clients_json = '[' . join(',', @openvpn_clients) . ']';
+}
+
+push @json, '"certificates":{"apache":{'
+    . join(',', @apache_certificate_json)
+    . '},"openvpn":{"clients":' . $openvpn_clients_json . '}}';
+
+if (defined $apcupsd) {
+    my @apcupsd_fields;
+    foreach my $key (qw(status model ups_name)) {
+        my $value = $apcupsd->{$key};
+        push @apcupsd_fields, json_string($key) . ':'
+            . (defined $value ? json_string($value) : 'null');
+    }
+    foreach my $key (qw(battery_charge_percent runtime_minutes load_percent)) {
+        my $value = $apcupsd->{$key};
+        push @apcupsd_fields, json_string($key) . ':'
+            . (defined $value ? $value : 'null');
+    }
+    push @json, '"ups":{"apcupsd":{' . join(',', @apcupsd_fields) . '}}';
+}
+
 push @json, '"system":{'
     . '"version":' . json_string($version)
     . ',"pakfire_version":' . json_string($pakfire_version)
@@ -736,6 +1127,7 @@ push @json, '"network":{'
     . ',"green":' . ($green ? 'true' : 'false')
     . ',"orange":' . ($orange ? 'true' : 'false')
     . ',"red":' . ($red ? 'true' : 'false')
+    . ',"interfaces":' . encode_json($network_interfaces)
     . '}';
 
 push @json, '"services":{'

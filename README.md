@@ -2,13 +2,13 @@
 
 [Deutsch](README-de.md)
 
-IPFire-API is a CGI-based API extension for IPFire. It exposes selected system, network, service, add-on, traffic, and internet connection information as JSON, and supports controlling the RED internet connection. The project's goal is to provide a broad range of useful information and features.
+IPFire-API is a CGI-based API extension for IPFire. It exposes selected system, network, service, add-on, UPS, traffic, and internet connection information as JSON, and supports controlling the RED internet connection. The project's goal is to provide a broad range of useful information and features.
 
 The project is based on the [HA-IPFire Home Assistant integration](https://github.com/FMainz/HA-IPFire). By developing it separately, the goal is to create a general-purpose API that provides integrations and other clients with the same open, standardized interface.
 
 ## Features
 
-- System, CPU, memory, disk, SMART, network, and service information
+- System, CPU, memory, disk, SMART, network, service, UPS, and certificate information
 - Status information for supported add-ons
 - RED traffic counters
 - Internet connection state and details
@@ -40,7 +40,7 @@ The endpoint is:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `services`, `addons`, `traffic`, and `connection` sections. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
+An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `services`, `addons`, `ups`, `traffic`, `connection`, and `certificates` sections. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
 
 ### Connection control
 
@@ -134,19 +134,39 @@ SMART information is provided for the system disk.
 
 ### Network
 
-The `network` section provides the current state of the IPFire network interfaces.
+The `network` section reports configured IPFire network zones and information about their assigned devices. Zone booleans indicate whether the zone is present in IPFire's hardware profile; they do not indicate the current physical link state.
 
 | Parameter | Description |
 | --- | --- |
-| `blue` | State of the BLUE network interface |
-| `green` | State of the GREEN network interface |
-| `orange` | State of the ORANGE network interface |
-| `red` | State of the RED network interface |
+| `blue` | Whether the BLUE zone is present in the hardware profile |
+| `green` | Whether the GREEN zone is present in the hardware profile |
+| `orange` | Whether the ORANGE zone is present in the hardware profile |
+| `red` | Whether the RED zone is present in the hardware profile |
 
 Values are boolean:
 
-* `true` – the interface is active
-* `false` – the interface is inactive
+* `true` – the zone is present
+* `false` – the zone is not present
+
+The `interfaces` object contains data for each configured zone, read from IPFire's interface settings and `ethtool`:
+
+| Parameter | Description |
+| --- | --- |
+| `device` | Linux network device assigned to the zone |
+| `driver` | Network driver name |
+| `driver_version` | Driver version reported by `ethtool` |
+| `firmware_version` | Firmware version reported by `ethtool` |
+| `supported_link_modes` | Link modes supported by the device and driver |
+| `max_supported_speed_mbps` | Highest speed found in the supported link modes |
+| `advertised_link_modes` | Link modes currently advertised for autonegotiation |
+| `link_partner_advertised_link_modes` | Link modes advertised by the connected partner, if reported |
+| `supports_auto_negotiation` | Whether the device supports autonegotiation |
+| `auto_negotiation` | Whether autonegotiation is currently enabled |
+| `speed_mbps` | Currently negotiated link speed in Mbps |
+| `duplex` | Currently negotiated duplex mode |
+| `link_detected` | Whether a physical link is detected |
+
+An interface entry is `null` when no assigned device is present. If the device exists but has no physical link, its supported and advertised modes may still be available while `speed_mbps` and `duplex` are `null`.
 
 ### Services
 
@@ -182,6 +202,54 @@ The `addons` section provides the current status of supported IPFire add-ons. Fo
 | `transmission.running` | Whether the Transmission add-on is running |
 
 Values are boolean: `true` means the add-on is running; `false` means it is not running. Transmission is an example; the section can provide status information for other supported add-ons.
+
+### UPS
+
+The `ups.apcupsd` object is included only when the optional IPFire `apcupsd` add-on is installed. It reports data using the add-on's `apcaccess status` command. If the command cannot return a status report, `status` is `unavailable` and measurements are `null`.
+
+| Parameter | Description |
+| --- | --- |
+| `status` | UPS state reported by apcupsd, such as `ONLINE`, `ONBATT`, or `COMMLOST` |
+| `battery_charge_percent` | Battery charge in percent (`BCHARGE`) |
+| `runtime_minutes` | Estimated remaining runtime in minutes (`TIMELEFT`) |
+| `load_percent` | Current UPS load in percent (`LOADPCT`) |
+| `model` | UPS model reported by apcupsd |
+| `ups_name` | Configured UPS name |
+
+The values depend on the UPS and driver and have not been verified against every supported device.
+
+### Certificates
+
+The `certificates` section reports the certificate Apache presents for the IPFire web interface on port `444`, and OpenVPN client certificates recorded by IPFire. The API reads Apache's certificate over the local TLS connection, so the reported expiry reflects the active certificate, including certificates managed by external tools such as ACME clients. OpenVPN client entries are read from IPFire's certificate database; the OpenVPN server certificate is excluded from that list.
+
+| Parameter | Description |
+| --- | --- |
+| `apache.status` | `valid`, `expired`, or `unavailable` |
+| `apache.subject` | Certificate subject |
+| `apache.issuer` | Certificate issuer |
+| `apache.not_before` | Start of validity, as reported by OpenSSL |
+| `apache.not_after` | Expiry date in UTC using ISO 8601 format |
+| `apache.remaining.years` | Whole calendar years remaining |
+| `apache.remaining.months` | Additional whole calendar months remaining |
+| `apache.remaining.days` | Additional calendar days remaining |
+| `apache.remaining_days` | Total whole days remaining |
+
+If Apache's certificate cannot be read, `status` is `unavailable` and certificate details are `null`. When the certificate has expired, the remaining counters are zero.
+
+OpenVPN client certificates are returned as an array under `openvpn.clients`. Each entry includes:
+
+| Parameter | Description |
+| --- | --- |
+| `common_name` | Certificate common name |
+| `serial` | Certificate serial number |
+| `status` | `valid`, `expired`, `revoked`, or `unknown` |
+| `not_after` | Expiry date in UTC using ISO 8601 format |
+| `remaining.years` | Whole calendar years remaining |
+| `remaining.months` | Additional whole calendar months remaining |
+| `remaining.days` | Additional calendar days remaining |
+| `remaining_days` | Total whole days remaining |
+
+An empty array means that no OpenVPN client certificates are present. If the OpenVPN certificate database or server certificate cannot be read, `openvpn.clients` is `null`.
 
 ### Updates
 
