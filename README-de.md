@@ -121,7 +121,7 @@ Die I/O-Statistiken für das Gerät `sda` werden unter `disk.sda` bereitgestellt
 
 #### SMART
 
-SMART-Informationen werden für die Systemfestplatte bereitgestellt.
+SMART-Informationen werden für die Systemfestplatte bereitgestellt. Das Ergebnis wird eine Stunde zwischengespeichert, damit die Festplatte nicht bei jeder API-Anfrage erneut abgefragt wird. Nach Ablauf des Caches aktualisiert die nächste API-Anfrage die Daten. Es gibt keine Aktualisierung im Hintergrund; ohne weitere Anfrage bleiben die angezeigten Werte daher unverändert.
 
 | Parameter | Beschreibung |
 | --- | --- |

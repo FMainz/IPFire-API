@@ -120,7 +120,7 @@ I/O statistics for the `sda` device are provided under `disk.sda`.
 
 #### SMART
 
-SMART information is provided for the system disk.
+SMART information is provided for the system disk. The result is cached for one hour so the disk is not queried on every API request. After the cache expires, the next API request refreshes the data; there is no background refresh, so the values remain unchanged until another request is made.
 
 | Parameter | Description |
 | --- | --- |
