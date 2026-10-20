@@ -962,6 +962,7 @@ sub addons_data {
 }
 
 my ($version, $core_update, $package_updates) = system_data();
+my $reboot_required = -e '/var/run/need_reboot' ? 1 : 0;
 my ($red_rx_bytes, $red_tx_bytes) = red_traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
 my $uptime = uptime_data();
@@ -1254,6 +1255,7 @@ push @json, '"system":{'
     . ',"virtual":' . ($virtual ? 'true' : 'false')
     . ',"core_update":' . ($core_update ? 'true' : 'false')
     . ',"package_updates":' . $package_updates
+    . ',"reboot_required":' . ($reboot_required ? 'true' : 'false')
     . ',"uptime":' . (defined $uptime ? $uptime : 'null')
     . ',"cpu":{'
     . '"total":' . (defined $cpu_total ? $cpu_total : 'null')

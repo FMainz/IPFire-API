@@ -78,6 +78,7 @@ Der Abschnitt `system` stellt folgende Informationen bereit:
 | `virtual` | Gibt an, ob das System virtualisiert ist |
 | `core_update` | Gibt an, ob ein Core-Update verfügbar ist |
 | `package_updates` | Anzahl der verfügbaren Paket-Updates |
+| `reboot_required` | Gibt an, ob IPFire nach einem Update einen Neustart als erforderlich markiert hat |
 | `uptime` | Betriebszeit des Systems in Sekunden |
 
 #### CPU
@@ -281,13 +282,14 @@ Der Abschnitt `system` stellt Informationen über verfügbare IPFire-Updates ber
 | --- | --- |
 | `core_update` | Gibt an, ob ein IPFire-Core-Update verfügbar ist |
 | `package_updates` | Anzahl der verfügbaren Paket-Updates |
+| `reboot_required` | Gibt an, ob IPFire nach einem Update einen Neustart als erforderlich markiert hat |
 
-Der Wert `core_update` ist boolesch:
+Die Werte `core_update` und `reboot_required` sind boolesch:
 
 * `true` – ein Core-Update ist verfügbar
 * `false` – kein Core-Update ist verfügbar
 
-`package_updates` enthält die Anzahl der verfügbaren Paket-Updates.
+`package_updates` enthält die Anzahl der verfügbaren Paket-Updates. `reboot_required` gibt an, ob die Datei `/var/run/need_reboot` vorhanden ist.
 
 ## Sicherheit
 
