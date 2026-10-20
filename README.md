@@ -40,7 +40,7 @@ The endpoint is:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `services`, `addons`, `ups`, `traffic`, `connection`, and `certificates` sections. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
+An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `dhcp`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
 
 ### Connection control
 
@@ -148,11 +148,13 @@ Values are boolean:
 * `true` – the zone is present
 * `false` – the zone is not present
 
-The `interfaces` object contains data for each configured zone, read from IPFire's interface settings and `ethtool`:
+The `interfaces` object contains data for each configured zone, read from IPFire's interface settings, the Linux interface counters, and `ethtool`:
 
 | Parameter | Description |
 | --- | --- |
 | `device` | Linux network device assigned to the zone |
+| `rx_bytes` | Cumulative number of bytes received by the interface |
+| `tx_bytes` | Cumulative number of bytes transmitted by the interface |
 | `driver` | Network driver name |
 | `driver_version` | Driver version reported by `ethtool` |
 | `firmware_version` | Firmware version reported by `ethtool` |
@@ -166,7 +168,19 @@ The `interfaces` object contains data for each configured zone, read from IPFire
 | `duplex` | Currently negotiated duplex mode |
 | `link_detected` | Whether a physical link is detected |
 
-An interface entry is `null` when no assigned device is present. If the device exists but has no physical link, its supported and advertised modes may still be available while `speed_mbps` and `duplex` are `null`.
+`rx_bytes` and `tx_bytes` are cumulative counters read from `/sys/class/net/<device>/statistics/`; clients can calculate rates by comparing successive readings. An interface entry is `null` when no assigned device is present. If the device exists but has no physical link, its supported and advertised modes may still be available while `speed_mbps` and `duplex` are `null`.
+
+#### Neighbors
+
+The `neighbors` array mirrors IPFire's `ip neigh show` output and includes address, device, link-layer address (when available), and neighbor state.
+
+#### Routes
+
+The `routes` array contains the main routing table. If IPFire has entries in routing table 220, they are included in the optional `ipsec_routes` array; this field is omitted when that table is empty.
+
+### DHCP leases
+
+The `dhcp.leases` array is read from `/var/state/dhcp/dhcpd.leases`, the lease database used by IPFire's web interface. It includes the latest record for each IP address, including expired leases, with its IP address, MAC address, hostname, expiry time, and active or expired status. A lease with no expiry is marked with `expires_never: true`. If the lease file cannot be read, `dhcp.leases` is `null`. The DHCP server's running state remains available under `services.dhcp`.
 
 ### Services
 
@@ -195,7 +209,7 @@ Values are boolean:
 
 ### Add-ons
 
-The `addons` section provides the current status of supported IPFire add-ons. For example, an add-on status is represented as:
+The `addons` section is included only when supported IPFire add-ons with services are installed. It provides their current status. If no such add-ons are installed, the section is omitted entirely. For example, an add-on status is represented as:
 
 | Parameter | Description |
 | --- | --- |

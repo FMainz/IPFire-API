@@ -33,15 +33,15 @@ chmod 755 /srv/web/ipfire/cgi-bin/api.cgi
 
 Das CGI verwendet die bestehende Authentifizierung der IPFire-Weboberfläche. Das Script richtet keine separaten API-Zugangsdaten ein.
 
-## Endpunkt
+## API-Zugriff
 
-Der Endpunkt lautet:
+Die API ist unter folgender Adresse erreichbar:
 
 ```text
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `services`, `addons`, `ups`, `traffic`, `connection` und `certificates`. Nicht verfügbare Messwerte werden, sofern zutreffend, als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `dhcp`, `services`, `ups`, `traffic`, `connection` und `certificates`. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
 
 ### Verbindungssteuerung
 
@@ -149,11 +149,13 @@ Die Werte sind boolesch:
 * `true` – die Zone ist vorhanden
 * `false` – die Zone ist nicht vorhanden
 
-Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFire-Schnittstelleneinstellungen und von `ethtool`:
+Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFire-Schnittstelleneinstellungen, den Linux-Schnittstellenzählern und von `ethtool`:
 
 | Parameter | Beschreibung |
 | --- | --- |
 | `device` | Der Linux-Netzwerkname des der Zone zugeordneten Geräts |
+| `rx_bytes` | Kumulierte Anzahl der von der Schnittstelle empfangenen Bytes |
+| `tx_bytes` | Kumulierte Anzahl der von der Schnittstelle gesendeten Bytes |
 | `driver` | Name des Netzwerktreibers |
 | `driver_version` | Von `ethtool` gemeldete Treiberversion |
 | `firmware_version` | Von `ethtool` gemeldete Firmwareversion |
@@ -167,7 +169,19 @@ Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFi
 | `duplex` | Aktuell ausgehandelter Duplexmodus |
 | `link_detected` | Gibt an, ob ein physischer Link erkannt wird |
 
-Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
+`rx_bytes` und `tx_bytes` sind kumulative Zähler aus `/sys/class/net/<device>/statistics/`. Clients können durch den Vergleich aufeinanderfolgender Werte die Übertragungsrate berechnen. Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
+
+#### Nachbartabelle
+
+Das Array `neighbors` entspricht IPFires Ausgabe von `ip neigh show` und enthält Adresse, Gerät, Link-Layer-Adresse (falls verfügbar) und Neighbor-Status.
+
+#### Routingtabellen
+
+Das Array `routes` enthält die Hauptroutingtabelle. Gibt es Einträge in Routingtabelle 220, werden sie im optionalen Array `ipsec_routes` ausgegeben. Ist diese Tabelle leer, fehlt das Feld vollständig.
+
+### DHCP-Leases
+
+Das Array `dhcp.leases` wird aus `/var/state/dhcp/dhcpd.leases` gelesen, derselben Lease-Datenbank, die auch die IPFire-Weboberfläche verwendet. Es enthält den jeweils letzten Eintrag pro IP-Adresse, einschließlich abgelaufener Leases, mit IP-Adresse, MAC-Adresse, Hostname, Ablaufzeit und Status (aktiv oder abgelaufen). Ein Lease ohne Ablaufzeit wird mit `expires_never: true` gekennzeichnet. Kann die Lease-Datei nicht gelesen werden, ist `dhcp.leases` gleich `null`. Ob der DHCP-Server läuft, steht weiterhin unter `services.dhcp`.
 
 ### Dienste
 
@@ -196,7 +210,7 @@ Die Werte sind boolesch:
 
 ### Add-ons
 
-Der Abschnitt `addons` stellt den aktuellen Status unterstützter IPFire-Add-ons bereit.
+Der Abschnitt `addons` wird nur ausgegeben, wenn unterstützte IPFire-Add-ons mit Diensten installiert sind. Er stellt deren aktuellen Status bereit. Sind keine solchen Add-ons installiert, fehlt der Abschnitt vollständig.
 
 Das folgende Beispiel zeigt, wie der Status eines Add-ons dargestellt wird:
 
@@ -277,7 +291,7 @@ Der Wert `core_update` ist boolesch:
 
 ## Sicherheit
 
-Lass diesen Endpunkt hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern.
+Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern.
 
 ## Add-ons
 

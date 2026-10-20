@@ -55,7 +55,7 @@ sub read_file {
     return $value;
 }
 
-sub traffic_data {
+sub red_traffic_data {
     my $interface = read_file('/var/ipfire/red/iface');
 
     return (undef, undef) unless defined $interface;
@@ -570,6 +570,8 @@ sub network_interface_data {
 
     my %data = (
         'device' => $device,
+        'rx_bytes' => undef,
+        'tx_bytes' => undef,
         'driver' => undef,
         'driver_version' => undef,
         'firmware_version' => undef,
@@ -583,6 +585,13 @@ sub network_interface_data {
         'duplex' => undef,
         'link_detected' => undef,
     );
+
+    my $rx_bytes = read_file("/sys/class/net/$device/statistics/rx_bytes");
+    my $tx_bytes = read_file("/sys/class/net/$device/statistics/tx_bytes");
+    $data{'rx_bytes'} = int($rx_bytes)
+        if defined $rx_bytes && $rx_bytes =~ /^\d+$/;
+    $data{'tx_bytes'} = int($tx_bytes)
+        if defined $tx_bytes && $tx_bytes =~ /^\d+$/;
 
     my %mode_keys = (
         'Supported link modes' => 'supported_link_modes',
@@ -650,6 +659,97 @@ sub network_interface_data {
     return \%data;
 }
 
+sub network_neighbours_data {
+    open(my $fh, '-|', '/sbin/ip', 'neigh', 'show') or return undef;
+
+    my @neighbours;
+    my %states = map { $_ => 1 } qw(REACHABLE STALE DELAY PROBE FAILED INCOMPLETE PERMANENT NOARP NONE);
+
+    while (my $line = <$fh>) {
+        chomp $line;
+        my @fields = split(/\s+/, $line);
+        next unless @fields;
+
+        my %entry = (
+            'address' => $fields[0],
+            'device' => undef,
+            'mac_address' => undef,
+            'state' => 'unknown',
+        );
+
+        for (my $i = 1; $i < @fields; $i++) {
+            if ($fields[$i] eq 'dev' && defined $fields[$i + 1]) {
+                $entry{'device'} = $fields[++$i];
+            } elsif ($fields[$i] eq 'lladdr' && defined $fields[$i + 1]) {
+                $entry{'mac_address'} = lc($fields[++$i]);
+            } elsif ($states{uc($fields[$i])}) {
+                $entry{'state'} = lc($fields[$i]);
+            }
+        }
+
+        push @neighbours, \%entry;
+    }
+
+    close($fh);
+    return \@neighbours;
+}
+
+sub ip_route_table_data {
+    my (@arguments) = @_;
+    open(my $fh, '-|', '/sbin/ip', @arguments) or return undef;
+
+    my @routes;
+    my %route_types = map { $_ => 1 }
+        qw(unicast local broadcast multicast throw unreachable prohibit blackhole nat anycast);
+
+    while (my $line = <$fh>) {
+        chomp $line;
+        next unless length $line;
+
+        my @fields = split(/\s+/, $line);
+        my %route = (
+            'type' => 'unicast',
+            'destination' => undef,
+            'via' => undef,
+            'device' => undef,
+            'protocol' => undef,
+            'scope' => undef,
+            'source' => undef,
+            'metric' => undef,
+            'table' => undef,
+            'raw' => $line,
+        );
+
+        if (@fields && $route_types{$fields[0]}) {
+            $route{'type'} = shift @fields;
+        }
+        $route{'destination'} = shift @fields if @fields;
+
+        my %keys = (
+            'via' => 'via',
+            'dev' => 'device',
+            'proto' => 'protocol',
+            'scope' => 'scope',
+            'src' => 'source',
+            'metric' => 'metric',
+            'table' => 'table',
+        );
+        for (my $i = 0; $i < @fields; $i++) {
+            my $key = $keys{$fields[$i]};
+            if (defined $key && defined $fields[$i + 1]) {
+                $route{$key} = $fields[++$i];
+            }
+        }
+
+        $route{'metric'} = 0 + $route{'metric'}
+            if defined $route{'metric'} && $route{'metric'} =~ /^\d+$/;
+        push @routes, \%route;
+    }
+
+    close($fh);
+    return \@routes;
+}
+
 sub network_interfaces_data {
     my %settings;
     &General::readhash("${General::swroot}/ethernet/settings", \%settings);
@@ -702,6 +802,65 @@ sub apcupsd_data {
     }
 
     return \%data;
+}
+
+sub dhcp_leases_data {
+    my $lease_file = '/var/state/dhcp/dhcpd.leases';
+    open(my $fh, '<', $lease_file) or return undef;
+
+    my %leases;
+    my $lease;
+
+    while (my $line = <$fh>) {
+        if ($line =~ /^\s*lease\s+(\S+)\s*\{/) {
+            $lease = {
+                'ip_address' => $1,
+                'mac_address' => undef,
+                'hostname' => undef,
+                'expires_at' => undef,
+                'expires_never' => JSON::PP::false,
+                'status' => 'unknown',
+                'expired' => undef,
+            };
+            next;
+        }
+
+        next unless defined $lease;
+
+        if ($line =~ /^\s*ends\s+\d\s+(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})/) {
+            my ($year, $month, $day, $hour, $minute, $second) = ($1, $2, $3, $4, $5, $6);
+            my $expires = eval {
+                timegm($second, $minute, $hour, $day, $month - 1, $year);
+            };
+            if (defined $expires) {
+                $lease->{'expires_at'} = sprintf(
+                    '%04d-%02d-%02dT%02d:%02d:%02dZ',
+                    $year, $month, $day, $hour, $minute, $second
+                );
+                my $expired = $expires <= time();
+                $lease->{'status'} = $expired ? 'expired' : 'active';
+                $lease->{'expired'} = $expired ? JSON::PP::true() : JSON::PP::false();
+            }
+        } elsif ($line =~ /^\s*ends\s+never/) {
+            $lease->{'expires_never'} = JSON::PP::true();
+            $lease->{'status'} = 'active';
+            $lease->{'expired'} = JSON::PP::false();
+        } elsif ($line =~ /^\s*hardware\s+ethernet\s+([0-9a-f:]+);/i) {
+            $lease->{'mac_address'} = lc($1);
+        } elsif ($line =~ /^\s*client-hostname\s+"((?:\\.|[^"])*)";/) {
+            my $hostname = $1;
+            $hostname =~ s/\\(["\\])/$1/g;
+            $lease->{'hostname'} = $hostname;
+        } elsif ($line =~ /^\s*\}\s*$/) {
+            # The lease file keeps historical records. The latest record for
+            # an address is the one shown by IPFire's current lease list.
+            $leases{$lease->{'ip_address'}} = $lease;
+            $lease = undef;
+        }
+    }
+
+    close($fh);
+    return [ map { $leases{$_} } sort keys %leases ];
 }
 
 sub services_data {
@@ -803,7 +962,7 @@ sub addons_data {
 }
 
 my ($version, $core_update, $package_updates) = system_data();
-my ($rx_bytes, $tx_bytes) = traffic_data();
+my ($red_rx_bytes, $red_tx_bytes) = red_traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
 my $uptime = uptime_data();
 my %apache_certificate = apache_certificate_data();
@@ -852,8 +1011,12 @@ my $kernel_release = $kernel_version[0] // '';
 chomp($kernel_release);
 
 my %services = services_data();
+my $dhcp_leases = dhcp_leases_data();
 my %addons = addons_data();
 my $network_interfaces = network_interfaces_data();
+my $network_neighbours = network_neighbours_data();
+my $network_routes = ip_route_table_data('route', 'show');
+my $ipsec_routes = ip_route_table_data('route', 'list', 'table', '220');
 my $apcupsd = apcupsd_data();
 
 # -----------------------------------------------------------------------------
@@ -1122,12 +1285,21 @@ push @json, '"system":{'
     . ',"smart":' . (defined $smart ? $smart : 'null')
     . '}';
 
-push @json, '"network":{'
-    . '"blue":' . ($blue ? 'true' : 'false')
-    . ',"green":' . ($green ? 'true' : 'false')
-    . ',"orange":' . ($orange ? 'true' : 'false')
-    . ',"red":' . ($red ? 'true' : 'false')
-    . ',"interfaces":' . encode_json($network_interfaces)
+my @network_json = (
+    '"blue":' . ($blue ? 'true' : 'false'),
+    '"green":' . ($green ? 'true' : 'false'),
+    '"orange":' . ($orange ? 'true' : 'false'),
+    '"red":' . ($red ? 'true' : 'false'),
+    '"interfaces":' . encode_json($network_interfaces),
+    '"neighbors":' . (defined $network_neighbours ? encode_json($network_neighbours) : 'null'),
+    '"routes":' . (defined $network_routes ? encode_json($network_routes) : 'null'),
+);
+push @network_json, '"ipsec_routes":' . encode_json($ipsec_routes)
+    if defined $ipsec_routes && @{$ipsec_routes};
+push @json, '"network":{' . join(',', @network_json) . '}';
+
+push @json, '"dhcp":{"leases":'
+    . (defined $dhcp_leases ? encode_json($dhcp_leases) : 'null')
     . '}';
 
 push @json, '"services":{'
@@ -1156,11 +1328,11 @@ foreach my $addon (sort keys %addons) {
         . '}';
 }
 
-push @json, '"addons":{' . join(',', @addon_json) . '}';
+push @json, '"addons":{' . join(',', @addon_json) . '}' if @addon_json;
 
 push @json, '"traffic":{'
-    . '"rx_bytes":' . (defined $rx_bytes ? $rx_bytes : 'null')
-    . ',"tx_bytes":' . (defined $tx_bytes ? $tx_bytes : 'null')
+    . '"rx_bytes":' . (defined $red_rx_bytes ? $red_rx_bytes : 'null')
+    . ',"tx_bytes":' . (defined $red_tx_bytes ? $red_tx_bytes : 'null')
     . '}';
 
 my @connection;
