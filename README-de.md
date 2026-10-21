@@ -6,6 +6,29 @@ IPFire-API ist eine CGI-basierte API-Erweiterung für IPFire. Sie stellt ausgew�
 
 Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://github.com/FMainz/HA-IPFire). Mit der separaten Entwicklung soll eine allgemeingültige API geschaffen werden, die Integrationen und anderen Clients die selbe offene standadisierte Schnittstelle zur Verfügung stellt.
 
+## Inhaltsverzeichnis
+
+- [Funktionen](#funktionen)
+- [Installation](#installation)
+- [API-Zugriff](#api-zugriff)
+  - [Verbindungssteuerung](#verbindungssteuerung)
+  - [Systemparameter](#systemparameter)
+    - [CPU](#cpu)
+    - [Arbeitsspeicher](#arbeitsspeicher)
+    - [Festplatte](#festplatte)
+    - [SMART](#smart)
+  - [Netzwerk](#netzwerk)
+    - [Nachbartabelle](#nachbartabelle)
+    - [Routingtabellen](#routingtabellen)
+  - [DHCP-Leases](#dhcp-leases)
+  - [Dienste](#dienste)
+  - [Add-ons](#add-ons)
+    - [USV](#usv)
+  - [Zertifikate](#zertifikate)
+  - [Updates](#updates)
+- [Sicherheit](#sicherheit)
+- [Lizenz](#lizenz)
+
 ## Funktionen
 
 - Informationen zu System, CPU, Arbeitsspeicher, Festplatte, SMART, USV und Zertifikaten
@@ -211,7 +234,7 @@ Die Werte sind boolesch:
 
 ### Add-ons
 
-Der Abschnitt `addons` wird nur ausgegeben, wenn unterstützte IPFire-Add-ons mit Diensten installiert sind. Er stellt deren aktuellen Status bereit. Sind keine solchen Add-ons installiert, fehlt der Abschnitt vollständig.
+Der Abschnitt `addons` wird nur ausgegeben, wenn unterstützte IPFire-Add-ons mit Diensten installiert sind. Er stellt deren aktuellen Status bereit. Sind keine solchen Add-ons installiert, fehlt der Abschnitt vollständig. Der Bereich ist für weitere Add-on-Schnittstellen vorgesehen. Beiträge sollten das Add-on, die Quelle des Status und relevante IPFire-Versionsannahmen dokumentieren.
 
 Das folgende Beispiel zeigt, wie der Status eines Add-ons dargestellt wird:
 
@@ -226,7 +249,7 @@ Der Wert ist boolesch:
 
 Transmission dient hier nur als Beispiel. Der Abschnitt `addons` kann auch Statusinformationen zu anderen unterstützten Add-ons bereitstellen.
 
-### USV
+#### USV
 
 Das Objekt `ups.apcupsd` wird nur ausgegeben, wenn das optionale IPFire-Add-on `apcupsd` installiert ist. Die Daten werden über den Befehl `apcaccess status` ausgelesen. Kann der Befehl keinen Statusbericht liefern, lautet `status` `unavailable` und die Messwerte sind `null`.
 
@@ -294,10 +317,6 @@ Die Werte `core_update` und `reboot_required` sind boolesch:
 ## Sicherheit
 
 Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern.
-
-## Add-ons
-
-Der Bereich `addons` ist für weitere Add-on-Schnittstellen vorgesehen. Beiträge sollten das Add-on, die Quelle des Status und relevante IPFire-Versionsannahmen dokumentieren.
 
 ## Lizenz
 

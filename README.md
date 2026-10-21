@@ -6,6 +6,29 @@ IPFire-API is a CGI-based API extension for IPFire. It exposes selected system, 
 
 The project is based on the [HA-IPFire Home Assistant integration](https://github.com/FMainz/HA-IPFire). By developing it separately, the goal is to create a general-purpose API that provides integrations and other clients with the same open, standardized interface.
 
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Endpoint](#endpoint)
+  - [Connection control](#connection-control)
+  - [System parameters](#system-parameters)
+    - [CPU](#cpu)
+    - [Memory](#memory)
+    - [Disk](#disk)
+    - [SMART](#smart)
+  - [Network](#network)
+    - [Neighbors](#neighbors)
+    - [Routes](#routes)
+  - [DHCP leases](#dhcp-leases)
+  - [Services](#services)
+  - [Add-ons](#add-ons)
+    - [UPS](#ups)
+  - [Certificates](#certificates)
+  - [Updates](#updates)
+- [Security](#security)
+- [License](#license)
+
 ## Features
 
 - System, CPU, memory, disk, SMART, network, service, UPS, and certificate information
@@ -210,7 +233,7 @@ Values are boolean:
 
 ### Add-ons
 
-The `addons` section is included only when supported IPFire add-ons with services are installed. It provides their current status. If no such add-ons are installed, the section is omitted entirely. For example, an add-on status is represented as:
+The `addons` section is included only when supported IPFire add-ons with services are installed. It provides their current status. If no such add-ons are installed, the section is omitted entirely. This section is intended to grow as add-on integrations are added. Contributions should document the add-on, its status source, and any IPFire version assumptions. For example, an add-on status is represented as:
 
 | Parameter | Description |
 | --- | --- |
@@ -218,7 +241,7 @@ The `addons` section is included only when supported IPFire add-ons with service
 
 Values are boolean: `true` means the add-on is running; `false` means it is not running. Transmission is an example; the section can provide status information for other supported add-ons.
 
-### UPS
+#### UPS
 
 The `ups.apcupsd` object is included only when the optional IPFire `apcupsd` add-on is installed. It reports data using the add-on's `apcaccess status` command. If the command cannot return a status report, `status` is `unavailable` and measurements are `null`.
 
@@ -281,10 +304,6 @@ The `system` section also provides information about available IPFire updates.
 ## Security
 
 Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. `POST` requests can change the internet connection state.
-
-## Add-ons
-
-The `addons` response section is intended to grow as add-on integrations are added. Contributions should document the add-on, its status source, and any IPFire version assumptions.
 
 ## License
 
