@@ -3,7 +3,7 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire API                                                                  #
+# IPFire-API version 0.1.0                                                    #
 #                                                                             #
 # This CGI provides system, network, service, add-on, UPS, traffic, and       #
 # connection information from IPFire for integrations and other clients.      #
