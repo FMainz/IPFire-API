@@ -67,6 +67,8 @@ https://<ipfire-host>:444/cgi-bin/api.cgi
 
 An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
 
+All authenticated `POST` actions require the `X-IPFire-API: 1` header. For compatibility with existing clients, the legacy `X-HA-IPFire-API: 1` header is also accepted.
+
 ### Connection control
 
 Connection actions use authenticated `POST` requests with a form body and the `X-IPFire-API: 1` header.
@@ -80,6 +82,8 @@ curl --user '<webgui-user>' \
 ```
 
 To disconnect, use `action=disconnect` instead. `curl` prompts for the WebGUI password. Replace the placeholders with the WebGUI username and IPFire host name. If IPFire uses a self-signed certificate, configure `curl` to trust that certificate, for example with `--cacert /path/to/ipfire-certificate.pem`.
+
+The CGI invokes IPFire's native `/usr/local/bin/redctrl` command. A `connect` action starts or restarts the connection; `disconnect` stops it. Other methods, missing headers, and unsupported actions are rejected.
 
 ### Update installation
 
@@ -95,16 +99,20 @@ curl --user '<webgui-user>' \
 
 The API starts the same non-interactive Pakfire upgrade used by the IPFire web interface. The request returns immediately with `result: "accepted"`; poll the `updates.operation` object in `GET` responses to see whether the run is `running`, `completed`, or `failed`. The API rejects the request if no updates are available or another API-started upgrade is running. This action installs the full update set; it does not install individual packages selectively. **Only run this request when you are ready to install all updates currently listed by Pakfire.**
 
-To check the operation status, send an authenticated `GET` request to the same URL:
+The `updates.operation` object is included in every `GET` response. The following command prints the full JSON response; the operation status is in `updates.operation`:
 
 ```sh
 curl --user '<webgui-user>' \
   'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-The CGI invokes IPFire's native `/usr/local/bin/redctrl` command. A `connect` action starts or restarts the connection; `disconnect` stops it. Other methods, missing headers, and unsupported actions are rejected.
+If `jq` is installed, you can filter the response to display only `updates.operation`. On Debian Trixie, `jq` is available in the [package of the same name](https://packages.debian.org/trixie/jq) and can be installed with `sudo apt install jq`:
 
-For compatibility with existing clients, the CGI also accepts the legacy `X-HA-IPFire-API: 1` header.
+```sh
+curl --user '<webgui-user>' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi' \
+  | jq '.updates.operation'
+```
 
 ### System parameters
 

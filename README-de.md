@@ -68,6 +68,8 @@ https://<ipfire-host>:444/cgi-bin/api.cgi
 
 Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
 
+Alle authentifizierten `POST`-Aktionen benötigen den Header `X-IPFire-API: 1`. Aus Gründen der Abwärtskompatibilität wird auch der bisherige Header `X-HA-IPFire-API: 1` akzeptiert.
+
 ### Verbindungssteuerung
 
 Verbindungsaktionen verwenden authentifizierte `POST`-Anfragen mit einem Formularkörper und dem Header `X-IPFire-API: 1`.
@@ -81,6 +83,8 @@ curl --user '<webgui-benutzer>' \
 ```
 
 Zum Trennen der Verbindung ersetze `action=connect` durch `action=disconnect`. `curl` fragt das Passwort der Weboberfläche interaktiv ab. Ersetze die Platzhalter durch den Benutzernamen der Weboberfläche und den Hostnamen von IPFire. Bei einem selbstsignierten IPFire-Zertifikat muss `curl` diesem Zertifikat vertrauen, zum Beispiel mit `--cacert /pfad/zum/ipfire-zertifikat.pem`.
+
+Das CGI ruft IPFires natives `/usr/local/bin/redctrl` auf. `connect` baut die Verbindung auf oder verbindet sie neu; `disconnect` trennt sie. Andere Methoden, fehlende Header und nicht unterstützte Aktionen werden abgewiesen.
 
 ### Update-Installation
 
@@ -96,16 +100,20 @@ curl --user '<webgui-benutzer>' \
 
 Die API startet denselben nicht interaktiven Pakfire-Upgrade-Prozess wie die IPFire-Weboberfläche. Die Anfrage kehrt sofort mit `result: "accepted"` zurück. Den Status `running`, `completed` oder `failed` liefert danach `updates.operation` in den `GET`-Antworten. Die API weist die Anfrage zurück, wenn keine Updates verfügbar sind oder bereits ein von der API gestartetes Upgrade läuft. Es werden immer alle verfügbaren Updates gemeinsam installiert; einzelne Pakete lassen sich damit nicht auswählen. **Sende diese Anfrage nur, wenn du bereit bist, alle derzeit von Pakfire gelisteten Updates zu installieren.**
 
-Den Status des Vorgangs kannst du mit einer authentifizierten `GET`-Anfrage an dieselbe Adresse abrufen:
+Das Objekt `updates.operation` ist in jeder `GET`-Antwort enthalten. Der folgende Aufruf gibt die vollständige JSON-Antwort aus; der Status des Vorgangs steht unter `updates.operation`:
 
 ```sh
 curl --user '<webgui-benutzer>' \
   'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-Das CGI ruft IPFires natives `/usr/local/bin/redctrl` auf. `connect` baut die Verbindung auf oder verbindet sie neu; `disconnect` trennt sie. Andere Methoden, fehlende Header und nicht unterstützte Aktionen werden abgewiesen.
+Wenn `jq` installiert ist, lässt sich die Antwort filtern, sodass nur `updates.operation` ausgegeben wird. Unter Debian Trixie ist `jq` im [gleichnamigen Paket](https://packages.debian.org/de/trixie/jq) enthalten und kann mit `sudo apt install jq` installiert werden:
 
-Für bestehende Clients akzeptiert das CGI außerdem weiterhin den bisherigen Header `X-HA-IPFire-API: 1`.
+```sh
+curl --user '<webgui-benutzer>' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi' \
+  | jq '.updates.operation'
+```
 
 ### Systemparameter
 
