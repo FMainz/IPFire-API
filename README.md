@@ -69,27 +69,38 @@ An authenticated `GET` request returns the current data as JSON. The response us
 
 ### Connection control
 
-Connection actions use authenticated `POST` requests with a form body and the `X-IPFire-API: 1` header:
+Connection actions use authenticated `POST` requests with a form body and the `X-IPFire-API: 1` header.
+The following example uses `curl` to establish the connection:
 
-```text
-action=connect
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=connect' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-or:
-
-```text
-action=disconnect
-```
+To disconnect, use `action=disconnect` instead. `curl` prompts for the WebGUI password. Replace the placeholders with the WebGUI username and IPFire host name. If IPFire uses a self-signed certificate, configure `curl` to trust that certificate, for example with `--cacert /path/to/ipfire-certificate.pem`.
 
 ### Update installation
 
-An authenticated `POST` request with the `X-IPFire-API: 1` header can start the installation of all updates currently listed by Pakfire:
+An authenticated `POST` request with the `X-IPFire-API: 1` header can start the installation of all updates currently listed by Pakfire.
+Example using `curl`:
 
-```text
-action=upgrade
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=upgrade' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-The API starts the same non-interactive Pakfire upgrade used by the IPFire web interface. The request returns immediately with `result: "accepted"`; poll the `updates.operation` object in `GET` responses to see whether the run is `running`, `completed`, or `failed`. The API rejects the request if no updates are available or another API-started upgrade is running. This action installs the full update set; it does not install individual packages selectively.
+The API starts the same non-interactive Pakfire upgrade used by the IPFire web interface. The request returns immediately with `result: "accepted"`; poll the `updates.operation` object in `GET` responses to see whether the run is `running`, `completed`, or `failed`. The API rejects the request if no updates are available or another API-started upgrade is running. This action installs the full update set; it does not install individual packages selectively. **Only run this request when you are ready to install all updates currently listed by Pakfire.**
+
+To check the operation status, send an authenticated `GET` request to the same URL:
+
+```sh
+curl --user '<webgui-user>' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
 
 The CGI invokes IPFire's native `/usr/local/bin/redctrl` command. A `connect` action starts or restarts the connection; `disconnect` stops it. Other methods, missing headers, and unsupported actions are rejected.
 

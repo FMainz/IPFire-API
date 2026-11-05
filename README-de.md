@@ -70,27 +70,38 @@ Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die An
 
 ### Verbindungssteuerung
 
-Verbindungsaktionen verwenden authentifizierte `POST`-Anfragen mit einem Formularkörper und dem Header `X-IPFire-API: 1`:
+Verbindungsaktionen verwenden authentifizierte `POST`-Anfragen mit einem Formularkörper und dem Header `X-IPFire-API: 1`.
+Als Beispiel der Aufruf zum Verbindungsaufbau mittels `curl`:
 
-```text
-action=connect
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=connect' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-oder:
-
-```text
-action=disconnect
-```
+Zum Trennen der Verbindung ersetze `action=connect` durch `action=disconnect`. `curl` fragt das Passwort der Weboberfläche interaktiv ab. Ersetze die Platzhalter durch den Benutzernamen der Weboberfläche und den Hostnamen von IPFire. Bei einem selbstsignierten IPFire-Zertifikat muss `curl` diesem Zertifikat vertrauen, zum Beispiel mit `--cacert /pfad/zum/ipfire-zertifikat.pem`.
 
 ### Update-Installation
 
-Eine authentifizierte `POST`-Anfrage mit dem Header `X-IPFire-API: 1` kann die Installation aller von Pakfire aktuell gelisteten Updates starten:
+Eine authentifizierte `POST`-Anfrage mit dem Header `X-IPFire-API: 1` kann die Installation aller von Pakfire aktuell gelisteten Updates starten.
+Beispielumsetzung mittels `curl`:
 
-```text
-action=upgrade
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=upgrade' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
-Die API startet denselben nicht interaktiven Pakfire-Upgrade-Prozess wie die IPFire-Weboberfläche. Die Anfrage kehrt sofort mit `result: "accepted"` zurück. Den Status `running`, `completed` oder `failed` liefert danach `updates.operation` in den `GET`-Antworten. Die API weist die Anfrage zurück, wenn keine Updates verfügbar sind oder bereits ein von der API gestartetes Upgrade läuft. Es werden immer alle verfügbaren Updates gemeinsam installiert; einzelne Pakete lassen sich damit nicht auswählen.
+Die API startet denselben nicht interaktiven Pakfire-Upgrade-Prozess wie die IPFire-Weboberfläche. Die Anfrage kehrt sofort mit `result: "accepted"` zurück. Den Status `running`, `completed` oder `failed` liefert danach `updates.operation` in den `GET`-Antworten. Die API weist die Anfrage zurück, wenn keine Updates verfügbar sind oder bereits ein von der API gestartetes Upgrade läuft. Es werden immer alle verfügbaren Updates gemeinsam installiert; einzelne Pakete lassen sich damit nicht auswählen. **Sende diese Anfrage nur, wenn du bereit bist, alle derzeit von Pakfire gelisteten Updates zu installieren.**
+
+Den Status des Vorgangs kannst du mit einer authentifizierten `GET`-Anfrage an dieselbe Adresse abrufen:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
 
 Das CGI ruft IPFires natives `/usr/local/bin/redctrl` auf. `connect` baut die Verbindung auf oder verbindet sie neu; `disconnect` trennt sie. Andere Methoden, fehlende Header und nicht unterstützte Aktionen werden abgewiesen.
 
