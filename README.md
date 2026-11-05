@@ -33,6 +33,7 @@ The project is based on the [HA-IPFire Home Assistant integration](https://githu
 
 - System, CPU, memory, disk, SMART, network, service, UPS, and certificate information
 - Status information for supported add-ons
+- Available IPFire core and package updates, with an authenticated action to start the Pakfire upgrade
 - RED traffic counters
 - Internet connection state and details
 - Connect and disconnect actions through IPFire's native `redctrl`
@@ -63,7 +64,7 @@ The endpoint is:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `dhcp`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
+An authenticated `GET` request returns the current data as JSON. The response uses API version `1` and includes `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
 
 ### Connection control
 
@@ -78,6 +79,16 @@ or:
 ```text
 action=disconnect
 ```
+
+### Update installation
+
+An authenticated `POST` request with the `X-IPFire-API: 1` header can start the installation of all updates currently listed by Pakfire:
+
+```text
+action=upgrade
+```
+
+The API starts the same non-interactive Pakfire upgrade used by the IPFire web interface. The request returns immediately with `result: "accepted"`; poll the `updates.operation` object in `GET` responses to see whether the run is `running`, `completed`, or `failed`. The API rejects the request if no updates are available or another API-started upgrade is running. This action installs the full update set; it does not install individual packages selectively.
 
 The CGI invokes IPFire's native `/usr/local/bin/redctrl` command. A `connect` action starts or restarts the connection; `disconnect` stops it. Other methods, missing headers, and unsupported actions are rejected.
 
@@ -291,7 +302,7 @@ An empty array means that no OpenVPN client certificates are present. If the Ope
 
 ### Updates
 
-The `system` section also provides information about available IPFire updates.
+The `system` section provides the existing update summary. The `updates` section lists the individual core and package updates and reports the status of an API-started upgrade. The list uses the local Pakfire package metadata; refresh the package lists in IPFire's Pakfire page first if they may be out of date. The API does not refresh them as part of a `GET` request.
 
 | Parameter | Description |
 | --- | --- |
@@ -301,9 +312,13 @@ The `system` section also provides information about available IPFire updates.
 
 `core_update` and `reboot_required` are boolean. `package_updates` is the number of available package updates. `reboot_required` reflects whether `/var/run/need_reboot` exists.
 
+`updates.available` is an array of pending updates. Core entries contain `type`, `name`, `version`, `installed_release`, and `available_release`. Package entries contain `type`, `name`, `installed_version`, `available_version`, `installed_release`, and `available_release`. It is `null` if the local Pakfire list cannot be read consistently with the summary counts.
+
+`updates.operation` contains `status`, `started_at`, `finished_at`, `exit_code`, and, when relevant, `error`. The timestamps are Unix timestamps in seconds. The status is `idle` before an API-started upgrade, `running` during it, then `completed` or `failed`. Operation history is kept in `/var/run` and is cleared when IPFire reboots.
+
 ## Security
 
-Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. `POST` requests can change the internet connection state.
+Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. `POST` requests can change the internet connection state or install IPFire updates.
 
 ## License
 

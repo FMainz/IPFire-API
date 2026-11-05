@@ -3,7 +3,7 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire-API version 0.1.0                                                    #
+# IPFire-API version 0.2.0                                                    #
 #                                                                             #
 # This CGI provides system, network, service, add-on, UPS, traffic, and       #
 # connection information from IPFire for integrations and other clients.      #
@@ -12,6 +12,8 @@
 
 use strict;
 use warnings;
+use Fcntl qw(:DEFAULT :flock);
+use POSIX qw(setsid);
 
 require '/var/ipfire/general-functions.pl';
 require "/opt/pakfire/lib/functions.pl";
@@ -19,6 +21,9 @@ use JSON::PP;
 use Time::Local qw(timegm);
 
 my $api_version = "1";
+my $update_state_file = '/var/run/ipfire-api-update.json';
+my $update_lock_file = '/var/run/ipfire-api-update.lock';
+my $update_log_file = '/var/log/ipfire-api-update.log';
 
 # -----------------------------------------------------------------------------
 # JSON helper
@@ -97,6 +102,217 @@ sub system_data {
         $core_update,
         $package_updates,
     );
+}
+
+sub pakfire_updates_data {
+    my ($core_update, $package_updates) = @_;
+    my $html = '';
+    open(my $capture, '>', \$html) or return undef;
+
+    {
+        local *STDOUT = $capture;
+        &Pakfire::dblist('upgrade', 'forweb');
+    }
+    close($capture);
+
+    my @updates;
+    while ($html =~ /<option value="([^"]+)">([^<]*)<\/option>/g) {
+        my ($name, $label) = ($1, $2);
+
+        if ($name eq 'core') {
+            next unless $label =~ /^Core-Update\s+--\s+(.*?)\s+--\s+Release:\s+(\d+)\s+->\s+(\d+)$/;
+            push @updates, {
+                'type' => 'core',
+                'name' => 'core',
+                'version' => $1,
+                'installed_release' => int($2),
+                'available_release' => int($3),
+            };
+        } else {
+            next unless $label =~ /^Update:\s+(.+?)\s+--\s+Version:\s+(.*?)\s+->\s+(.*?)\s+--\s+Release:\s+(\d+)\s+->\s+(\d+)$/;
+            push @updates, {
+                'type' => 'package',
+                'name' => $name,
+                'installed_version' => $2,
+                'available_version' => $3,
+                'installed_release' => int($4),
+                'available_release' => int($5),
+            };
+        }
+    }
+
+    my $expected_count = $package_updates + ($core_update ? 1 : 0);
+    return undef unless @updates == $expected_count;
+
+    return \@updates;
+}
+
+sub write_update_operation_state {
+    my ($state) = @_;
+    my $temporary_file = $update_state_file . '.' . $$;
+
+    open(my $fh, '>', $temporary_file) or return 0;
+    print {$fh} encode_json($state), "\n";
+    close($fh) or return 0;
+    chmod(0600, $temporary_file);
+
+    unless (rename($temporary_file, $update_state_file)) {
+        unlink($temporary_file);
+        return 0;
+    }
+
+    return 1;
+}
+
+sub read_update_operation_state {
+    my $contents = read_file($update_state_file);
+    return undef unless defined $contents;
+
+    my $state = eval { decode_json($contents) };
+    return undef unless ref($state) eq 'HASH';
+
+    return $state;
+}
+
+sub update_operation_data {
+    my $state = read_update_operation_state();
+    unless (-e $update_lock_file) {
+        return $state if defined $state;
+        return {
+            'status' => 'idle',
+            'started_at' => undef,
+            'finished_at' => undef,
+            'exit_code' => undef,
+        };
+    }
+
+    sysopen(my $lock_fh, $update_lock_file, O_RDWR | O_CREAT, 0600)
+        or return { 'status' => 'unknown' };
+
+    unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        if (defined $state && ($state->{'status'} // '') =~ /^(?:starting|running)$/) {
+            $state->{'status'} = 'running';
+            $state->{'finished_at'} = undef;
+            $state->{'exit_code'} = undef;
+            delete $state->{'error'};
+            return $state;
+        }
+
+        return {
+            'status' => 'running',
+            'started_at' => time(),
+            'finished_at' => undef,
+            'exit_code' => undef,
+        };
+    }
+
+    if (defined $state && ($state->{'status'} // '') =~ /^(?:starting|running)$/) {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'process_ended_unexpectedly';
+        $state->{'finished_at'} = time();
+        write_update_operation_state($state);
+    }
+
+    close($lock_fh);
+
+    return $state if defined $state;
+    return {
+        'status' => 'idle',
+        'started_at' => undef,
+        'finished_at' => undef,
+        'exit_code' => undef,
+    };
+}
+
+sub start_pakfire_upgrade {
+    my $pakfire = '/usr/local/bin/pakfire';
+    return { 'result' => 'error', 'error' => 'pakfire_not_found' }
+        unless -x $pakfire;
+
+    sysopen(my $lock_fh, $update_lock_file, O_RDWR | O_CREAT, 0600)
+        or return { 'result' => 'error', 'error' => 'update_lock_unavailable' };
+
+    unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'update_in_progress' };
+    }
+
+    my @system_status = system_data();
+    my $core_update = $system_status[1];
+    my $package_updates = $system_status[2];
+    my $updates = pakfire_updates_data($core_update, $package_updates);
+    unless (defined $updates) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'update_list_unavailable' };
+    }
+    unless (@{$updates}) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'no_updates_available' };
+    }
+
+    my $started_at = time();
+    my $state = {
+        'status' => 'starting',
+        'started_at' => $started_at,
+        'finished_at' => undef,
+        'exit_code' => undef,
+    };
+    unless (write_update_operation_state($state)) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'update_state_unavailable' };
+    }
+
+    my $pid = fork();
+    unless (defined $pid) {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'could_not_start_update';
+        $state->{'finished_at'} = time();
+        write_update_operation_state($state);
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'could_not_start_update' };
+    }
+
+    if ($pid == 0) {
+        eval { setsid(); };
+        $SIG{'HUP'} = 'IGNORE';
+        umask(0077);
+
+        close(STDIN);
+        close(STDOUT);
+        close(STDERR);
+        open(STDIN, '<', '/dev/null');
+        open(STDOUT, '>>', $update_log_file) or open(STDOUT, '>', '/dev/null');
+        open(STDERR, '>&STDOUT');
+        $| = 1;
+
+        $state->{'status'} = 'running';
+        write_update_operation_state($state);
+
+        my $result = system { $pakfire } $pakfire, 'upgrade', '-y', '--no-colors';
+        if ($result == -1) {
+            $state->{'status'} = 'failed';
+            $state->{'error'} = 'could_not_execute_pakfire';
+        } elsif ($result & 127) {
+            $state->{'status'} = 'failed';
+            $state->{'error'} = 'pakfire_terminated_by_signal';
+            $state->{'exit_code'} = 128 + ($result & 127);
+        } else {
+            $state->{'exit_code'} = $result >> 8;
+            $state->{'status'} = $state->{'exit_code'} == 0 ? 'completed' : 'failed';
+            $state->{'error'} = 'pakfire_failed' if $state->{'exit_code'} != 0;
+        }
+        $state->{'finished_at'} = time();
+        write_update_operation_state($state);
+        close($lock_fh);
+        POSIX::_exit(0);
+    }
+
+    close($lock_fh);
+    return {
+        'result' => 'accepted',
+        'status' => 'running',
+        'started_at' => $started_at,
+    };
 }
 
 sub cpu_data {
@@ -963,6 +1179,8 @@ sub addons_data {
 
 my ($version, $core_update, $package_updates) = system_data();
 my $reboot_required = -e '/var/run/need_reboot' ? 1 : 0;
+my $available_updates = pakfire_updates_data($core_update, $package_updates);
+my $update_operation = update_operation_data();
 my ($red_rx_bytes, $red_tx_bytes) = red_traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
 my $uptime = uptime_data();
@@ -1071,6 +1289,12 @@ if ($method eq 'POST') {
         $action = $1;
         $action =~ tr/+/ /;
         $action =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+    }
+
+    if ($action eq 'upgrade') {
+        my $result = start_pakfire_upgrade();
+        print encode_json({ 'api_version' => int($api_version), %{$result} });
+        exit 0;
     }
 
     if ($action ne 'connect' && $action ne 'disconnect') {
@@ -1285,6 +1509,11 @@ push @json, '"system":{'
     . '}'
     . '}'
     . ',"smart":' . (defined $smart ? $smart : 'null')
+    . '}';
+
+push @json, '"updates":{"available":'
+    . (defined $available_updates ? encode_json($available_updates) : 'null')
+    . ',"operation":' . encode_json($update_operation)
     . '}';
 
 my @network_json = (

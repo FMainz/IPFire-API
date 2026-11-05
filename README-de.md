@@ -34,6 +34,7 @@ Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://g
 - Informationen zu System, CPU, Arbeitsspeicher, Festplatte, SMART, USV und Zertifikaten
 - Status der Netzwerkschnittstellen und IPFire-Dienste
 - Status unterstützter Add-ons
+- Verfügbare IPFire-Core- und Paket-Updates sowie authentifizierter Start des Pakfire-Upgrade
 - Traffic-Zähler der RED-Schnittstelle
 - Status und Details der Internetverbindung
 - Verbinden und Trennen über IPFires natives `redctrl`
@@ -64,7 +65,7 @@ Die API ist unter folgender Adresse erreichbar:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `dhcp`, `services`, `ups`, `traffic`, `connection` und `certificates`. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
 
 ### Verbindungssteuerung
 
@@ -79,6 +80,16 @@ oder:
 ```text
 action=disconnect
 ```
+
+### Update-Installation
+
+Eine authentifizierte `POST`-Anfrage mit dem Header `X-IPFire-API: 1` kann die Installation aller von Pakfire aktuell gelisteten Updates starten:
+
+```text
+action=upgrade
+```
+
+Die API startet denselben nicht interaktiven Pakfire-Upgrade-Prozess wie die IPFire-Weboberfläche. Die Anfrage kehrt sofort mit `result: "accepted"` zurück. Den Status `running`, `completed` oder `failed` liefert danach `updates.operation` in den `GET`-Antworten. Die API weist die Anfrage zurück, wenn keine Updates verfügbar sind oder bereits ein von der API gestartetes Upgrade läuft. Es werden immer alle verfügbaren Updates gemeinsam installiert; einzelne Pakete lassen sich damit nicht auswählen.
 
 Das CGI ruft IPFires natives `/usr/local/bin/redctrl` auf. `connect` baut die Verbindung auf oder verbindet sie neu; `disconnect` trennt sie. Andere Methoden, fehlende Header und nicht unterstützte Aktionen werden abgewiesen.
 
@@ -299,7 +310,7 @@ Ein leeres Array bedeutet, dass keine OpenVPN-Clientzertifikate vorhanden sind. 
 
 ### Updates
 
-Der Abschnitt `system` stellt Informationen über verfügbare IPFire-Updates bereit.
+Der Abschnitt `system` enthält weiterhin die bisherige Update-Übersicht. Der Bereich `updates` listet die einzelnen Core- und Paket-Updates auf und meldet den Status eines über die API gestarteten Upgrades. Die Liste basiert auf den lokal gespeicherten Pakfire-Paketinformationen. Falls diese veraltet sein könnten, aktualisiere sie zuerst in der Pakfire-Seite von IPFire. Eine `GET`-Anfrage der API aktualisiert sie nicht selbst.
 
 | Parameter | Beschreibung |
 | --- | --- |
@@ -314,9 +325,13 @@ Die Werte `core_update` und `reboot_required` sind boolesch:
 
 `package_updates` enthält die Anzahl der verfügbaren Paket-Updates. `reboot_required` gibt an, ob die Datei `/var/run/need_reboot` vorhanden ist.
 
+`updates.available` ist ein Array der anstehenden Updates. Core-Einträge enthalten `type`, `name`, `version`, `installed_release` und `available_release`. Paket-Einträge enthalten `type`, `name`, `installed_version`, `available_version`, `installed_release` und `available_release`. Der Wert ist `null`, wenn die lokale Pakfire-Liste nicht mit den zusammenfassenden Update-Zahlen abgeglichen werden kann.
+
+`updates.operation` enthält `status`, `started_at`, `finished_at`, `exit_code` und gegebenenfalls `error`. Die Zeitangaben sind Unix-Zeitstempel in Sekunden. Der Status lautet vor einem API-gestarteten Upgrade `idle`, währenddessen `running` und danach `completed` oder `failed`. Der Vorgangsstatus wird unter `/var/run` gespeichert und bei einem Neustart von IPFire gelöscht.
+
 ## Sicherheit
 
-Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern.
+Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern oder IPFire-Updates installieren.
 
 ## Lizenz
 
