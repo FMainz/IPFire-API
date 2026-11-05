@@ -12,6 +12,7 @@ The project is based on the [HA-IPFire Home Assistant integration](https://githu
 - [Installation](#installation)
 - [Endpoint](#endpoint)
   - [Connection control](#connection-control)
+  - [Update installation](#update-installation)
   - [System parameters](#system-parameters)
     - [CPU](#cpu)
     - [Memory](#memory)

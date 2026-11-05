@@ -12,6 +12,7 @@ Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://g
 - [Installation](#installation)
 - [API-Zugriff](#api-zugriff)
   - [Verbindungssteuerung](#verbindungssteuerung)
+  - [Update-Installation](#update-installation)
   - [Systemparameter](#systemparameter)
     - [CPU](#cpu)
     - [Arbeitsspeicher](#arbeitsspeicher)
