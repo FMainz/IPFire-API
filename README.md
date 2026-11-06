@@ -1,3 +1,8 @@
+[![GitHub release](https://img.shields.io/github/release/FMainz/IPFire-API?include_prereleases=&sort=semver&color=blue)](https://github.com/FMainz/IPFire-API/releases/)
+![last commit](https://img.shields.io/github/last-commit/FMainz/IPFire-API)
+[![License: GPL-3.0-only](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](https://github.com/FMainz/IPFire-API/blob/main/LICENSE)
+![API downloads](https://img.shields.io/github/downloads/FMainz/IPFire-API/total?style=flat-square&color=red&label=API%20downloads)
+[![stars](https://img.shields.io/github/stars/FMainz/IPFire-API)](https://github.com/FMainz/IPFire-API/stargazers)
 # IPFire-API
 
 [Deutsch](README-de.md)
