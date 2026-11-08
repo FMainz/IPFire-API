@@ -18,12 +18,14 @@ Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://g
 - [API-Zugriff](#api-zugriff)
   - [Verbindungssteuerung](#verbindungssteuerung)
   - [Update-Installation](#update-installation)
+  - [Neustart](#neustart)
   - [Systemparameter](#systemparameter)
     - [CPU](#cpu)
     - [Arbeitsspeicher](#arbeitsspeicher)
     - [Festplatte](#festplatte)
     - [SMART](#smart)
   - [Netzwerk](#netzwerk)
+    - [VLANs](#vlans)
     - [Nachbartabelle](#nachbartabelle)
     - [Routingtabellen](#routingtabellen)
   - [DHCP-Leases](#dhcp-leases)
@@ -41,10 +43,11 @@ Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://g
 - Status der Netzwerkschnittstellen und IPFire-Dienste
 - Status unterstützter Add-ons
 - Verfügbare IPFire-Core- und Paket-Updates sowie authentifizierter Start des Pakfire-Upgrade
+- Authentifizierter Neustart des Routers, wenn IPFire ihn als erforderlich meldet
 - Traffic-Zähler der RED-Schnittstelle
 - Status und Details der Internetverbindung
 - Verbinden und Trennen über IPFires natives `redctrl`
-- JSON-Antworten mit API-Versionsfeld
+- JSON-Antworten mit API-Version und Script-Revision
 
 ## Installation
 
@@ -71,7 +74,7 @@ Die API ist unter folgender Adresse erreichbar:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1` und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1`, gibt die Revision des `api.cgi`-Scripts unter `api_revision` aus und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. `api_version` bezeichnet die Version der JSON-Schnittstelle; `api_revision` entspricht der Script-Version im Dateikopf. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
 
 Alle authentifizierten `POST`-Aktionen benötigen den Header `X-IPFire-API: 1`. Aus Gründen der Abwärtskompatibilität wird auch der bisherige Header `X-HA-IPFire-API: 1` akzeptiert.
 
@@ -118,6 +121,17 @@ Wenn `jq` installiert ist, lässt sich die Antwort filtern, sodass nur `updates.
 curl --user '<webgui-benutzer>' \
   'https://<ipfire-host>:444/cgi-bin/api.cgi' \
   | jq '.updates.operation'
+```
+
+### Neustart
+
+Eine authentifizierte `POST`-Anfrage mit `action=reboot` fordert IPFire zum Neustart auf. Die API akzeptiert diese Aktion nur, wenn `/var/run/need_reboot` vorhanden ist, und verwendet IPFires nativen Helfer `/usr/local/bin/ipfirereboot`. Der Router startet kurz nach der API-Antwort `result: "accepted"` neu. Die Verbindung zu Home Assistant wird unterbrochen, bis IPFire wieder erreichbar ist.
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=reboot' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
 ### Systemparameter
@@ -230,6 +244,22 @@ Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFi
 | `link_detected` | Gibt an, ob ein physischer Link erkannt wird |
 
 `rx_bytes` und `tx_bytes` sind kumulative Zähler aus `/sys/class/net/<device>/statistics/`. Clients können durch den Vergleich aufeinanderfolgender Werte die Übertragungsrate berechnen. Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
+
+#### VLANs
+
+Das optionale Array `vlans` listet die über IPFires Zonenkonfiguration eingerichteten VLANs auf. Sind keine VLANs konfiguriert, wird das Feld nicht ausgegeben. Jeder Eintrag enthält:
+
+| Parameter | Beschreibung |
+| --- | --- |
+| `zone` | IPFire-Zone, die das VLAN verwendet |
+| `vlan_id` | Konfigurierte VLAN-Kennung |
+| `parent_device` | Übergeordnetes Netzwerkgerät, sofern es anhand der konfigurierten Eltern-MAC-Adresse gefunden wird |
+| `parent_mac_address` | Von IPFire gespeicherte MAC-Adresse des Eltern-Geräts |
+| `zone_device` | Der Zone zugeordnetes Netzwerkgerät |
+| `zone_interface_present` | Gibt an, ob das Zonengerät derzeit unter Linux vorhanden ist |
+| `mac_address` | Für die VLAN-Schnittstelle konfigurierte MAC-Adresse |
+
+Die API liest diese Angaben aus IPFires Konfigurationsdatei `/var/ipfire/ethernet/vlans`. VLANs, die außerhalb der IPFire-Zonenkonfiguration angelegt wurden, werden hier nicht aufgeführt.
 
 #### Nachbartabelle
 
@@ -350,13 +380,19 @@ Die Werte `core_update` und `reboot_required` sind boolesch:
 
 `package_updates` enthält die Anzahl der verfügbaren Paket-Updates. `reboot_required` gibt an, ob die Datei `/var/run/need_reboot` vorhanden ist.
 
-`updates.available` ist ein Array der anstehenden Updates. Core-Einträge enthalten `type`, `name`, `version`, `installed_release` und `available_release`. Paket-Einträge enthalten `type`, `name`, `installed_version`, `available_version`, `installed_release` und `available_release`. Der Wert ist `null`, wenn die lokale Pakfire-Liste nicht mit den zusammenfassenden Update-Zahlen abgeglichen werden kann.
+`updates.available` ist ein Array der anstehenden Updates. Es wird aus der lokalen Core-Liste, Paketliste und den Metadaten der installierten Pakete von Pakfire gebildet. Core-Einträge enthalten `type`, `name`, `version`, `installed_release` und `available_release`. Paket-Einträge enthalten `type`, `name`, `installed_version`, `available_version`, `installed_release` und `available_release`. Gibt es keine anstehenden Updates, ist das Array leer. `null` bedeutet, dass die benötigten lokalen Pakfire-Daten nicht gelesen oder verarbeitet werden konnten. Eine `GET`-Anfrage aktualisiert diese Listen nicht.
 
-`updates.operation` enthält `status`, `started_at`, `finished_at`, `exit_code` und gegebenenfalls `error`. Die Zeitangaben sind Unix-Zeitstempel in Sekunden. Der Status lautet vor einem API-gestarteten Upgrade `idle`, währenddessen `running` und danach `completed` oder `failed`. Der Vorgangsstatus wird unter `/var/run` gespeichert und bei einem Neustart von IPFire gelöscht.
+`updates.operation` enthält `status`, `started_at`, `finished_at`, `exit_code` und gegebenenfalls `error`. Die Zeitangaben sind Unix-Zeitstempel in Sekunden. Der Status lautet vor einem API-gestarteten Upgrade `idle`, währenddessen `running` und danach `completed` oder `failed`. Der temporäre Vorgangsstatus und das Update-Protokoll liegen unter `/tmp/ipfire-api` und werden bei einem Neustart von IPFire gelöscht.
 
 ## Sicherheit
 
-Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern oder IPFire-Updates installieren.
+Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern, IPFire-Updates installieren oder den Router bei erforderlichem Neustart neu starten.
+
+### Unterstützung
+
+Wenn dir IPFire-API weiterhilft, kannst du die Weiterentwicklung auf Ko-fi unterstützen:
+
+[![FMainz auf Ko-fi unterstützen](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/fmainz)
 
 ## Lizenz
 

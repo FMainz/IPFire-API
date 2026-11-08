@@ -3,7 +3,7 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire-API version 0.2.0                                                    #
+# IPFire-API version 0.2.5                                                    #
 #                                                                             #
 # This CGI provides system, network, service, add-on, UPS, traffic, and       #
 # connection information from IPFire for integrations and other clients.      #
@@ -21,9 +21,11 @@ use JSON::PP;
 use Time::Local qw(timegm);
 
 my $api_version = "1";
-my $update_state_file = '/var/run/ipfire-api-update.json';
-my $update_lock_file = '/var/run/ipfire-api-update.lock';
-my $update_log_file = '/var/log/ipfire-api-update.log';
+my $api_revision = "0.2.5"; # Keep in sync with the version in the file header.
+my $update_runtime_dir = '/tmp/ipfire-api';
+my $update_state_file = "$update_runtime_dir/update.json";
+my $update_lock_file = "$update_runtime_dir/update.lock";
+my $update_log_file = "$update_runtime_dir/update.log";
 
 # -----------------------------------------------------------------------------
 # JSON helper
@@ -58,6 +60,24 @@ sub read_file {
     chomp $value;
 
     return $value;
+}
+
+sub ensure_update_runtime_dir {
+    unless (-e $update_runtime_dir || -l $update_runtime_dir) {
+        mkdir($update_runtime_dir, 0700)
+            or return undef unless -d $update_runtime_dir;
+    }
+
+    return undef if -l $update_runtime_dir || !-d $update_runtime_dir;
+
+    my @stat = lstat($update_runtime_dir);
+    return undef unless @stat && $stat[4] == $>;
+
+    if (($stat[2] & 0777) != 0700) {
+        chmod(0700, $update_runtime_dir) or return undef;
+    }
+
+    return $update_runtime_dir;
 }
 
 sub red_traffic_data {
@@ -105,50 +125,95 @@ sub system_data {
 }
 
 sub pakfire_updates_data {
-    my ($core_update, $package_updates) = @_;
-    my $html = '';
-    open(my $capture, '>', \$html) or return undef;
+    my $database_dir = $Conf::dbdir;
+    return undef unless defined $database_dir && $database_dir ne '';
 
-    {
-        local *STDOUT = $capture;
-        &Pakfire::dblist('upgrade', 'forweb');
-    }
-    close($capture);
-
-    my @updates;
-    while ($html =~ /<option value="([^"]+)">([^<]*)<\/option>/g) {
-        my ($name, $label) = ($1, $2);
-
-        if ($name eq 'core') {
-            next unless $label =~ /^Core-Update\s+--\s+(.*?)\s+--\s+Release:\s+(\d+)\s+->\s+(\d+)$/;
-            push @updates, {
-                'type' => 'core',
-                'name' => 'core',
-                'version' => $1,
-                'installed_release' => int($2),
-                'available_release' => int($3),
-            };
-        } else {
-            next unless $label =~ /^Update:\s+(.+?)\s+--\s+Version:\s+(.*?)\s+->\s+(.*?)\s+--\s+Release:\s+(\d+)\s+->\s+(\d+)$/;
-            push @updates, {
-                'type' => 'package',
-                'name' => $name,
-                'installed_version' => $2,
-                'available_version' => $3,
-                'installed_release' => int($4),
-                'available_release' => int($5),
-            };
+    my $core_list_file = "$database_dir/lists/core-list.db";
+    open(my $core_fh, '<', $core_list_file) or return undef;
+    my $available_core_release;
+    while (my $line = <$core_fh>) {
+        if ($line =~ /^\s*\$?core_release\s*=\s*["']?(\d+)["']?/) {
+            $available_core_release = int($1);
+            last;
         }
     }
+    close($core_fh);
 
-    my $expected_count = $package_updates + ($core_update ? 1 : 0);
-    return undef unless @updates == $expected_count;
+    my $installed_core_release = $Conf::core_mine;
+    return undef unless defined $installed_core_release
+        && $installed_core_release =~ /^\d+$/;
+    return undef unless defined $available_core_release;
+
+    my @updates;
+    if ($available_core_release > $installed_core_release) {
+        push @updates, {
+            'type' => 'core',
+            'name' => 'core',
+            'version' => $Conf::version,
+            'installed_release' => int($installed_core_release),
+            'available_release' => $available_core_release,
+        };
+    }
+
+    my $packages_file = "$database_dir/lists/packages_list.db";
+    open(my $packages_fh, '<', $packages_file) or return undef;
+    my %available_packages;
+    while (my $line = <$packages_fh>) {
+        chomp $line;
+        my ($name, $version, $release) = split(/;/, $line);
+        next unless defined $name && defined $version && defined $release;
+        next unless $release =~ /^\d+$/;
+        $available_packages{$name} = {
+            'version' => $version,
+            'release' => int($release),
+        };
+    }
+    close($packages_fh);
+
+    my $installed_dir = "$database_dir/installed";
+    opendir(my $installed_dh, $installed_dir) or return undef;
+    my @installed_files = sort grep { $_ ne '.' && $_ ne '..' && $_ !~ /^old/ }
+        readdir($installed_dh);
+    closedir($installed_dh);
+
+    foreach my $file (@installed_files) {
+        my $path = "$installed_dir/$file";
+        next unless -f $path;
+        open(my $meta_fh, '<', $path) or return undef;
+
+        my ($name, $version, $release);
+        while (my $line = <$meta_fh>) {
+            if ($line =~ /^Name:\s*(.*?)\s*$/) {
+                $name = $1;
+            } elsif ($line =~ /^ProgVersion:\s*(.*?)\s*$/) {
+                $version = $1;
+            } elsif ($line =~ /^Release:\s*(\d+)\s*$/) {
+                $release = int($1);
+            }
+        }
+        close($meta_fh);
+
+        next unless defined $name && defined $version && defined $release;
+        my $available = $available_packages{$name};
+        next unless defined $available;
+        next unless $release < $available->{'release'};
+
+        push @updates, {
+            'type' => 'package',
+            'name' => $name,
+            'installed_version' => $version,
+            'available_version' => $available->{'version'},
+            'installed_release' => $release,
+            'available_release' => $available->{'release'},
+        };
+    }
 
     return \@updates;
 }
 
 sub write_update_operation_state {
     my ($state) = @_;
+    return 0 unless defined ensure_update_runtime_dir();
     my $temporary_file = $update_state_file . '.' . $$;
 
     open(my $fh, '>', $temporary_file) or return 0;
@@ -175,6 +240,9 @@ sub read_update_operation_state {
 }
 
 sub update_operation_data {
+    return { 'status' => 'unknown' }
+        unless defined ensure_update_runtime_dir();
+
     my $state = read_update_operation_state();
     unless (-e $update_lock_file) {
         return $state if defined $state;
@@ -229,6 +297,9 @@ sub start_pakfire_upgrade {
     return { 'result' => 'error', 'error' => 'pakfire_not_found' }
         unless -x $pakfire;
 
+    return { 'result' => 'error', 'error' => 'update_runtime_unavailable' }
+        unless defined ensure_update_runtime_dir();
+
     sysopen(my $lock_fh, $update_lock_file, O_RDWR | O_CREAT, 0600)
         or return { 'result' => 'error', 'error' => 'update_lock_unavailable' };
 
@@ -240,7 +311,7 @@ sub start_pakfire_upgrade {
     my @system_status = system_data();
     my $core_update = $system_status[1];
     my $package_updates = $system_status[2];
-    my $updates = pakfire_updates_data($core_update, $package_updates);
+    my $updates = pakfire_updates_data();
     unless (defined $updates) {
         close($lock_fh);
         return { 'result' => 'error', 'error' => 'update_list_unavailable' };
@@ -779,10 +850,55 @@ sub fireinfo_data {
     );
 }
 
-sub network_interface_data {
+sub configured_interface_name {
     my ($device) = @_;
-    return undef unless defined $device && $device =~ /^[A-Za-z0-9_.:-]+$/;
+    return undef unless defined $device;
+
+    # IPFire can store the lower-device suffix shown by `ip link`, e.g.
+    # blue0@green0. The actual sysfs directory is named only blue0.
+    $device =~ s/\@.*$//;
+    return undef unless $device =~ /^[A-Za-z0-9_.:-]+$/;
+
+    return $device;
+}
+
+sub sysfs_interface_name {
+    my ($device) = @_;
+    $device = configured_interface_name($device);
+    return undef unless defined $device;
     return undef unless -e "/sys/class/net/$device";
+
+    return $device;
+}
+
+sub network_device_for_mac {
+    my ($mac_address) = @_;
+    return undef unless defined $mac_address;
+    return undef unless $mac_address =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
+
+    opendir(my $dh, '/sys/class/net') or return undef;
+    my (@matches, @physical_matches);
+
+    while (my $device = readdir($dh)) {
+        next unless $device =~ /^[A-Za-z0-9_.:-]+$/;
+        my $address = read_file("/sys/class/net/$device/address");
+        next unless defined $address && lc($address) eq lc($mac_address);
+
+        push @matches, $device;
+        push @physical_matches, $device if -e "/sys/class/net/$device/device";
+    }
+
+    closedir($dh);
+
+    return $physical_matches[0] if @physical_matches;
+    return $matches[0] if @matches;
+    return undef;
+}
+
+sub network_interface_data {
+    my ($configured_device) = @_;
+    my $device = sysfs_interface_name($configured_device);
+    return undef unless defined $device;
 
     my %data = (
         'device' => $device,
@@ -977,6 +1093,62 @@ sub network_interfaces_data {
     }
 
     return \%interfaces;
+}
+
+sub network_vlans_data {
+    my $vlan_file = "${General::swroot}/ethernet/vlans";
+    return undef unless -r $vlan_file;
+
+    my %vlan_settings;
+    &General::readhash($vlan_file, \%vlan_settings);
+
+    my %ethernet_settings;
+    &General::readhash("${General::swroot}/ethernet/settings", \%ethernet_settings);
+
+    my @vlans;
+    foreach my $zone (qw(red green orange blue)) {
+        my $key = uc($zone);
+        my $vlan_id = $vlan_settings{"${key}_VLAN_ID"};
+        next unless defined $vlan_id && $vlan_id =~ /^\d+$/;
+        next if $vlan_id < 1 || $vlan_id > 4094;
+
+        my $configured_parent = $vlan_settings{"${key}_PARENT_DEV"};
+        my $parent_mac_address;
+        if (defined $configured_parent
+                && $configured_parent =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i) {
+            $parent_mac_address = lc($configured_parent);
+        }
+
+        my $parent_device = sysfs_interface_name($configured_parent);
+        if (!defined $parent_device && defined $parent_mac_address) {
+            $parent_device = network_device_for_mac($parent_mac_address);
+        }
+
+        my $zone_device = configured_interface_name($ethernet_settings{"${key}_DEV"});
+        my $zone_interface_present = defined sysfs_interface_name($zone_device)
+            ? JSON::PP::true()
+            : JSON::PP::false();
+
+        my $vlan_mac_address = $vlan_settings{"${key}_MAC_ADDRESS"};
+        $vlan_mac_address = lc($vlan_mac_address)
+            if defined $vlan_mac_address
+                && $vlan_mac_address =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
+        $vlan_mac_address = undef
+            unless defined $vlan_mac_address
+                && $vlan_mac_address =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+
+        push @vlans, {
+            'zone' => $zone,
+            'vlan_id' => int($vlan_id),
+            'parent_device' => $parent_device,
+            'parent_mac_address' => $parent_mac_address,
+            'zone_device' => $zone_device,
+            'zone_interface_present' => $zone_interface_present,
+            'mac_address' => $vlan_mac_address,
+        };
+    }
+
+    return \@vlans;
 }
 
 sub apcupsd_data {
@@ -1179,7 +1351,7 @@ sub addons_data {
 
 my ($version, $core_update, $package_updates) = system_data();
 my $reboot_required = -e '/var/run/need_reboot' ? 1 : 0;
-my $available_updates = pakfire_updates_data($core_update, $package_updates);
+my $available_updates = pakfire_updates_data();
 my $update_operation = update_operation_data();
 my ($red_rx_bytes, $red_tx_bytes) = red_traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
@@ -1233,6 +1405,7 @@ my %services = services_data();
 my $dhcp_leases = dhcp_leases_data();
 my %addons = addons_data();
 my $network_interfaces = network_interfaces_data();
+my $network_vlans = network_vlans_data();
 my $network_neighbours = network_neighbours_data();
 my $network_routes = ip_route_table_data('route', 'show');
 my $ipsec_routes = ip_route_table_data('route', 'list', 'table', '220');
@@ -1247,7 +1420,8 @@ print "Cache-Control: no-store, no-cache, must-revalidate\r\n";
 print "Pragma: no-cache\r\n";
 print "\r\n";
 
-# The API provides read-only system data and connection control.
+# The API provides system data, connection control, update installation, and
+# a guarded reboot action.
 my $method = $ENV{'REQUEST_METHOD'} // 'GET';
 
 # -----------------------------------------------------------------------------
@@ -1267,13 +1441,15 @@ my $method = $ENV{'REQUEST_METHOD'} // 'GET';
 # and a form-encoded POST body:
 #   action=connect
 #   action=disconnect
+#   action=upgrade
+#   action=reboot
 #
 if ($method eq 'POST') {
     my $api_header = $ENV{'HTTP_X_IPFIRE_API'} // '';
     my $legacy_api_header = $ENV{'HTTP_X_HA_IPFIRE_API'} // '';
 
     if ($api_header ne '1' && $legacy_api_header ne '1') {
-        print '{"api_version":'.$api_version.',"error":"forbidden"}';
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"forbidden"}';
         exit 0;
     }
 
@@ -1293,19 +1469,75 @@ if ($method eq 'POST') {
 
     if ($action eq 'upgrade') {
         my $result = start_pakfire_upgrade();
-        print encode_json({ 'api_version' => int($api_version), %{$result} });
+        print encode_json({ 'api_version' => int($api_version), 'api_revision' => $api_revision, %{$result} });
+        exit 0;
+    }
+
+    if ($action eq 'reboot') {
+        unless (-e '/var/run/need_reboot') {
+            print encode_json({
+                'api_version' => int($api_version),
+                'api_revision' => $api_revision,
+                'result' => 'error',
+                'error' => 'reboot_not_required',
+            });
+            exit 0;
+        }
+
+        my $reboot_helper = '/usr/local/bin/ipfirereboot';
+        unless (-x $reboot_helper) {
+            print encode_json({
+                'api_version' => int($api_version),
+                'api_revision' => $api_revision,
+                'result' => 'error',
+                'error' => 'reboot_helper_not_found',
+            });
+            exit 0;
+        }
+
+        my $pid = fork();
+        unless (defined $pid) {
+            print encode_json({
+                'api_version' => int($api_version),
+                'api_revision' => $api_revision,
+                'result' => 'error',
+                'error' => 'could_not_schedule_reboot',
+            });
+            exit 0;
+        }
+
+        if ($pid == 0) {
+            eval { setsid(); };
+            $SIG{'HUP'} = 'IGNORE';
+            close(STDIN);
+            close(STDOUT);
+            close(STDERR);
+            open(STDIN, '<', '/dev/null');
+            open(STDOUT, '>', '/dev/null');
+            open(STDERR, '>&STDOUT');
+            sleep 1;
+            exec { $reboot_helper } $reboot_helper, 'boot'
+                or POSIX::_exit(127);
+        }
+
+        print encode_json({
+            'api_version' => int($api_version),
+            'api_revision' => $api_revision,
+            'result' => 'accepted',
+            'status' => 'rebooting',
+        });
         exit 0;
     }
 
     if ($action ne 'connect' && $action ne 'disconnect') {
-        print '{"api_version":'.$api_version.',"error":"invalid_action"}';
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"invalid_action"}';
         exit 0;
     }
 
     my $redctrl = '/usr/local/bin/redctrl';
 
     unless (-x $redctrl) {
-        print '{"api_version":'.$api_version.',"error":"redctrl_not_found"}';
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"redctrl_not_found"}';
         exit 0;
     }
 
@@ -1317,14 +1549,14 @@ if ($method eq 'POST') {
             : 'start';
     } elsif ($action eq 'disconnect') {
         if (!-e "${General::swroot}/red/active") {
-            print '{"api_version":'.$api_version.',"result":"ok"}';
+            print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"result":"ok"}';
             exit 0;
         }
 
         $command = 'stop';
     }
     unless (defined $command) {
-        print '{"api_version":'.$api_version.',"result":"error","error":"invalid_action"}';
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"result":"error","error":"invalid_action"}';
         exit 0;
     }
 
@@ -1341,10 +1573,10 @@ if ($method eq 'POST') {
     }
 
     if ($result == 0) {
-        print '{"api_version":'.$api_version.',"result":"ok"}';
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"result":"ok"}';
     } else {
         my $exit_code = $result >> 8;
-        print '{"api_version":'.$api_version.',"result":"error","error":"redctrl_failed","exit_code":'
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"result":"error","error":"redctrl_failed","exit_code":'
             . $exit_code
             . "}";
     }
@@ -1353,7 +1585,7 @@ if ($method eq 'POST') {
 }
 
 if ($method ne 'GET') {
-    print '{"api_version":'.$api_version.',"error":"method_not_allowed"}';
+    print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"method_not_allowed"}';
     exit 0;
 }
 
@@ -1413,6 +1645,7 @@ if ($external_ip ne '') {
 
 my @json;
 push @json, '"api_version":'.$api_version;
+push @json, '"api_revision":'.json_string($api_revision);
 
 my @apache_certificate_json;
 foreach my $key (qw(status subject issuer not_before not_after remaining_days)) {
@@ -1527,6 +1760,8 @@ my @network_json = (
 );
 push @network_json, '"ipsec_routes":' . encode_json($ipsec_routes)
     if defined $ipsec_routes && @{$ipsec_routes};
+push @network_json, '"vlans":' . encode_json($network_vlans)
+    if defined $network_vlans && @{$network_vlans};
 push @json, '"network":{' . join(',', @network_json) . '}';
 
 push @json, '"dhcp":{"leases":'
