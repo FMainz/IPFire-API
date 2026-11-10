@@ -5,11 +5,13 @@
 [![Stars](https://img.shields.io/github/stars/FMainz/IPFire-API)](https://github.com/FMainz/IPFire-API/stargazers)
 # IPFire-API
 
-[English](README.md)
+Diese Dokumentation ist auf 🇩🇪 Deutsch und 🇬🇧 [Englisch](README.md) verfügbar.
 
-IPFire-API ist eine CGI-basierte API-Erweiterung für IPFire. Sie stellt ausgewählte System-, Netzwerk-, Dienst-, Add-on-, USV-, Traffic- und Verbindungsinformationen als JSON bereit und kann die RED-Internetverbindung steuern. Das Ziel des Projekt ist es, viele sinnvolle Informationen und Funktionen zur Verfügung zu stellen.
+IPFire-API ist eine Schnittstelle für IPFire, die ausgewählte System-, Netzwerk-, Dienst-, Add-on-, USV-, Traffic- und Internetverbindungsdaten im JSON-Format bereitstellt. Außerdem bietet sie authentifizierte Steuerungsmöglichkeiten: Die RED-Verbindung kann online oder offline geschaltet, die Installation verfügbarer Updates aus der Ferne gestartet und ein Neustart angefordert werden, wenn IPFire ihn als erforderlich meldet.
 
-Grundstock des Projekts ist die Home-Assistant-Integration [HA-IPFire](https://github.com/FMainz/HA-IPFire). Mit der separaten Entwicklung soll eine allgemeingültige API geschaffen werden, die Integrationen und anderen Clients die selbe offene standadisierte Schnittstelle zur Verfügung stellt.
+Die API wurde ursprünglich für die Home-Assistant-Integration [HA-IPFire](https://github.com/FMainz/HA-IPFire) entwickelt und wird inzwischen als separates Projekt gepflegt, damit auch andere Integrationen und Clients sie nutzen können.
+
+Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem gewissen Risiko verbunden, auch bei dieser API. Wenn du die API nicht benötigst, solltest du sie nicht installieren.
 
 ## Inhaltsverzeichnis
 

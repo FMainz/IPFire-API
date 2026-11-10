@@ -5,11 +5,13 @@
 [![stars](https://img.shields.io/github/stars/FMainz/IPFire-API)](https://github.com/FMainz/IPFire-API/stargazers)
 # IPFire-API
 
-[Deutsch](README-de.md)
+This documentation is available in 🇬🇧 English and 🇩🇪 [German](README-de.md).
 
-IPFire-API is a CGI-based API extension for IPFire. It exposes selected system, network, service, add-on, UPS, traffic, and internet connection information as JSON, and supports controlling the RED internet connection. The project's goal is to provide a broad range of useful information and features.
+IPFire-API is an interface for IPFire that returns selected system, network, service, add-on, UPS, traffic, and internet connection information in JSON format. It also provides authenticated controls to bring the RED connection online or offline, start the installation of available updates remotely, and request a router reboot when IPFire reports that one is required.
 
-The project is based on the [HA-IPFire Home Assistant integration](https://github.com/FMainz/HA-IPFire). By developing it separately, the goal is to create a general-purpose API that provides integrations and other clients with the same open, standardized interface.
+The API was originally developed for the [HA-IPFire Home Assistant integration](https://github.com/FMainz/HA-IPFire) and is now maintained as a separate project, so other integrations and clients can use it as well.
+
+Installing additional software on a firewall always carries some risk, including this API. If you do not need the API, you should not install it.
 
 ## Contents
 
