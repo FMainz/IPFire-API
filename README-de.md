@@ -21,6 +21,7 @@ Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem g
   - [Verbindungssteuerung](#verbindungssteuerung)
   - [Update-Installation](#update-installation)
   - [Neustart](#neustart)
+  - [Backup-Management](#backup-management)
   - [Systemparameter](#systemparameter)
     - [CPU](#cpu)
     - [Arbeitsspeicher](#arbeitsspeicher)
@@ -46,6 +47,7 @@ Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem g
 - Status unterstützter Add-ons
 - Verfügbare IPFire-Core- und Paket-Updates sowie authentifizierter Start des Pakfire-Upgrade
 - Authentifizierter Neustart des Routers, wenn IPFire ihn als erforderlich meldet
+- System- und Add-on-Backups aus der Ferne erstellen, auflisten, herunterladen und löschen; ISO-Backup-Erstellung starten
 - Traffic-Zähler der RED-Schnittstelle
 - Status und Details der Internetverbindung
 - Verbinden und Trennen über IPFires natives `redctrl`
@@ -76,7 +78,7 @@ Die API ist unter folgender Adresse erreichbar:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1`, gibt die Revision des `api.cgi`-Scripts unter `api_revision` aus und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. `api_version` bezeichnet die Version der JSON-Schnittstelle; `api_revision` entspricht der Script-Version im Dateikopf. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1`, gibt die Revision des `api.cgi`-Scripts unter `api_revision` aus und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. `api_version` bezeichnet die Version der JSON-Schnittstelle; `api_revision` entspricht der Script-Version im Dateikopf. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`. Die Backup-Verzeichnisse werden nur durchsucht, wenn die Anfrage `?backup=1` enthält; dann wird auch `backups` ausgegeben.
 
 Alle authentifizierten `POST`-Aktionen benötigen den Header `X-IPFire-API: 1`. Aus Gründen der Abwärtskompatibilität wird auch der bisherige Header `X-HA-IPFire-API: 1` akzeptiert.
 
@@ -133,6 +135,65 @@ Eine authentifizierte `POST`-Anfrage mit `action=reboot` fordert IPFire zum Neus
 curl --user '<webgui-benutzer>' \
   --header 'X-IPFire-API: 1' \
   --data-urlencode 'action=reboot' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+### Backup-Management
+
+Das Objekt `backups` wird nur bei einer authentifizierten `GET`-Anfrage mit `?backup=1` ausgegeben. So werden die Backup-Verzeichnisse bei regulären API-Abfragen nicht durchsucht. Es enthält ein Array `system` mit vollständigen System-Backups (`.ipf`) aus `/var/ipfire/backup`, das Neueste zuerst. Jeder Eintrag enthält den Dateinamen, die Dateigröße in Byte und den Änderungszeitpunkt als Unix-Zeitstempel. `addons_available` führt die Add-ons auf, für die IPFire eine Backup-Funktion bereitstellt, auch wenn noch keine Sicherungsdatei vorhanden ist. Wenn Add-on-Backup-Dateien unter `/var/ipfire/backup/addons/backup` vorhanden sind, wird zusätzlich das Array `addons` mit Dateiinformationen und Add-on-Namen ausgegeben. Add-on-Backups enthalten Konfigurationsdateien, nicht die installierten Add-on-Pakete. Ein leeres Array `system` bedeutet, dass keine System-Backups vorhanden sind; `null` bedeutet, dass das System-Backup-Verzeichnis nicht gelesen werden konnte. Das Objekt `operation` zeigt den letzten über die API gestarteten Erstellungs-, Lösch- oder ISO-Erstellungsvorgang an. IPFire erstellt ISOs mit seiner nativen Backup-Methode lokal auf dem Router. Die [offizielle IPFire-Backup-Dokumentation](https://www.ipfire.org/docs/configuration/system/backup) beschreibt keinen HTTP/API-Zugriff zum Auflisten oder Herunterladen der erzeugten ISO-Dateien. Verwende `https://<ipfire-host>:444/cgi-bin/api.cgi?backup=1`, um Backups aufzulisten oder `backups.operation` abzufragen.
+
+Zum Erstellen eines System-Backups sende eine authentifizierte `POST`-Anfrage mit `action=create_backup`, `type=system` und `logs=include` oder `logs=exclude`. Die API startet den Vorgang im Hintergrund und antwortet mit `result: "accepted"`. Frage anschließend `backups.operation` in `GET`-Antworten mit `?backup=1` ab, bis der Status `completed` oder `failed` lautet. Das Einbeziehen der Logs kann deutlich länger dauern. Beispiel ohne Logs:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'logs=exclude' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+Für ein Add-on-Konfigurations-Backup verwende `type=addon` und den Paketnamen des Add-ons:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=addon' \
+  --data-urlencode 'addon=wio' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+Für ein angepasstes Installations-ISO mit dem aktuellen System-Backup verwende `type=iso`. IPFire lädt das Basis-ISO bei Bedarf aus dem Internet herunter. Die Erstellung kann lange dauern und benötigt eine Internetverbindung sowie ausreichend freien Speicherplatz. Frage `backups.operation` über `GET ...?backup=1` ab. Der Status bleibt `running`, bis IPFire die ISO-Erstellung abgeschlossen hat:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=iso' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+Zum Herunterladen eines gelisteten Backups sende eine authentifizierte `POST`-Anfrage mit `action=download_backup`, dem passenden `type` (`system` oder `addon`) und dem exakten `filename`. Die Antwort enthält direkt die Datei; mit `curl --output` wird sie gespeichert:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=download_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'filename=2026-11-12-1200.ipf' \
+  --output '2026-11-12-1200.ipf' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+Zum Löschen eines gelisteten Backups sende eine authentifizierte `POST`-Anfrage mit `action=delete_backup`, dem passenden `type` (`system` oder `addon`) und dem exakten `filename`. Bei Erfolg gibt die API JSON mit `result: "ok"` zurück; `backups.operation` zeigt anschließend den abgeschlossenen Löschvorgang samt Typ und Dateiname an. Das Löschen ist endgültig; prüfe Typ und Dateiname vor dem Senden der Anfrage:
+
+```sh
+curl --user '<webgui-benutzer>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=delete_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'filename=2026-11-08-1724.ipf' \
   'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
@@ -388,7 +449,7 @@ Die Werte `core_update` und `reboot_required` sind boolesch:
 
 ## Sicherheit
 
-Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. `POST`-Anfragen können den Status der Internetverbindung ändern, IPFire-Updates installieren oder den Router bei erforderlichem Neustart neu starten.
+Lass diesen API-Zugang hinter der authentifizierten IPFire-Weboberfläche. Mache ihn nicht für nicht vertrauenswürdige Netzwerke erreichbar. System- und Add-on-Backups sowie angepasste Installations-ISOs enthalten sensible Konfigurationsdaten; schütze heruntergeladene Dateien entsprechend. Das Löschen eines Backups ist endgültig. `POST`-Anfragen können den Status der Internetverbindung ändern, IPFire-Updates installieren, Backups erstellen, herunterladen oder löschen oder den Router bei erforderlichem Neustart neu starten.
 
 ### Unterstützung
 

@@ -3,16 +3,16 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire-API version 0.2.5                                                    #
+# IPFire-API version 0.2.13                                                   #
 #                                                                             #
-# This CGI provides system, network, service, add-on, UPS, traffic, and       #
-# connection information from IPFire for integrations and other clients.      #
+# This CGI provides system, network, service, add-on, UPS, traffic, backup,    #
+# and connection information from IPFire for integrations and other clients.   #
 #                                                                             #
 ###############################################################################
 
 use strict;
 use warnings;
-use Fcntl qw(:DEFAULT :flock);
+use Fcntl qw(:DEFAULT :flock :mode);
 use POSIX qw(setsid);
 
 require '/var/ipfire/general-functions.pl';
@@ -21,8 +21,14 @@ use JSON::PP;
 use Time::Local qw(timegm);
 
 my $api_version = "1";
-my $api_revision = "0.2.5"; # Keep in sync with the version in the file header.
+my $api_revision = "0.2.13"; # Keep in sync with the version in the file header.
+my $backup_directory = '/var/ipfire/backup';
+my $addon_backup_directory = '/var/ipfire/backup/addons/backup';
+my $addon_include_directory = '/var/ipfire/backup/addons/includes';
 my $update_runtime_dir = '/tmp/ipfire-api';
+my $backup_state_file = "$update_runtime_dir/backup.json";
+my $backup_lock_file = "$update_runtime_dir/backup.lock";
+my $backup_log_file = "$update_runtime_dir/backup.log";
 my $update_state_file = "$update_runtime_dir/update.json";
 my $update_lock_file = "$update_runtime_dir/update.lock";
 my $update_log_file = "$update_runtime_dir/update.log";
@@ -78,6 +84,608 @@ sub ensure_update_runtime_dir {
     }
 
     return $update_runtime_dir;
+}
+
+sub print_json_headers {
+    print "Content-Type: application/json; charset=utf-8\r\n";
+    print "Cache-Control: no-store, no-cache, must-revalidate\r\n";
+    print "Pragma: no-cache\r\n";
+    print "\r\n";
+}
+
+sub form_parameter {
+    my ($body, $parameter) = @_;
+    my @values;
+
+    foreach my $pair (split(/&/, $body)) {
+        my ($key, $value) = split(/=/, $pair, 2);
+        next unless defined $key;
+        $value //= '';
+        $key =~ tr/+/ /;
+        $value =~ tr/+/ /;
+        $key =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+        $value =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+        push @values, $value if $key eq $parameter;
+    }
+
+    return undef unless @values == 1;
+    return $values[0];
+}
+
+sub backup_files_in_directory {
+    my ($directory, $extension) = @_;
+    $extension //= 'ipf';
+    my @directory_stat = lstat($directory);
+    return undef unless @directory_stat
+        && (($directory_stat[2] & S_IFMT) == S_IFDIR);
+
+    opendir(my $dh, $directory) or return undef;
+    my @backups;
+
+    foreach my $filename (readdir($dh)) {
+        if ($extension eq 'iso') {
+            next unless $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*-\d{4}-\d\d-\d\d-\d\d:?\d\d\.iso$/;
+        } else {
+            next unless $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*\.\Q$extension\E$/;
+        }
+
+        my $path = "$directory/$filename";
+        my @stat = lstat($path);
+        next unless @stat && (($stat[2] & S_IFMT) == S_IFREG);
+
+        push @backups, {
+            'filename' => $filename,
+            'size_bytes' => 0 + $stat[7],
+            'modified_at' => int($stat[9]),
+        };
+    }
+
+    closedir($dh);
+    @backups = sort { $b->{'filename'} cmp $a->{'filename'} } @backups;
+    return \@backups;
+}
+
+sub addon_backup_names {
+    my @directory_stat = lstat($addon_include_directory);
+    return undef unless @directory_stat
+        && (($directory_stat[2] & S_IFMT) == S_IFDIR);
+
+    opendir(my $dh, $addon_include_directory) or return undef;
+    my @addons;
+
+    foreach my $addon (readdir($dh)) {
+        next unless $addon =~ /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+        my @stat = lstat("$addon_include_directory/$addon");
+        next unless @stat && (($stat[2] & S_IFMT) == S_IFREG);
+        push @addons, $addon;
+    }
+
+    closedir($dh);
+    return [ sort @addons ];
+}
+
+sub backup_list_data {
+    my $system_backups = backup_files_in_directory($backup_directory);
+    return undef unless defined $system_backups;
+
+    my %backups = ('system' => $system_backups);
+    my $available_addons = addon_backup_names();
+    if (defined $available_addons && @{$available_addons}) {
+        $backups{'addons_available'} = $available_addons;
+    }
+
+    my $addon_backups = backup_files_in_directory($addon_backup_directory);
+    if (defined $addon_backups && @{$addon_backups}) {
+        foreach my $backup (@{$addon_backups}) {
+            my $addon = $backup->{'filename'};
+            $addon =~ s/\.ipf$//;
+            $backup->{'addon'} = $addon;
+        }
+        $backups{'addons'} = $addon_backups;
+    }
+    my $iso_backups = backup_files_in_directory('/var/tmp/backupiso', 'iso');
+    if (defined $iso_backups && @{$iso_backups}) {
+        $backups{'isos'} = $iso_backups;
+    }
+    $backups{'operation'} = backup_operation_data();
+
+    return \%backups;
+}
+
+sub backup_action_error {
+    my ($status, $error) = @_;
+    print "Status: $status\r\n";
+    print_json_headers();
+    print encode_json({
+        'api_version' => int($api_version),
+        'api_revision' => $api_revision,
+        'error' => $error,
+    });
+}
+
+sub write_backup_operation_state {
+    my ($state) = @_;
+    return 0 unless defined ensure_update_runtime_dir();
+    my $temporary_file = $backup_state_file . '.' . $$;
+
+    open(my $fh, '>', $temporary_file) or return 0;
+    print {$fh} encode_json($state), "\n";
+    close($fh) or return 0;
+    chmod(0600, $temporary_file);
+
+    unless (rename($temporary_file, $backup_state_file)) {
+        unlink($temporary_file);
+        return 0;
+    }
+
+    return 1;
+}
+
+sub read_backup_operation_state {
+    my $contents = read_file($backup_state_file);
+    return undef unless defined $contents;
+
+    my $state = eval { decode_json($contents) };
+    return undef unless ref($state) eq 'HASH';
+
+    return $state;
+}
+
+sub backup_operation_data {
+    return { 'status' => 'unknown' }
+        unless defined ensure_update_runtime_dir();
+
+    my $state = read_backup_operation_state();
+    unless (-e $backup_lock_file) {
+        return $state if defined $state;
+        return {
+            'status' => 'idle',
+            'started_at' => undef,
+            'finished_at' => undef,
+            'exit_code' => undef,
+        };
+    }
+
+    sysopen(my $lock_fh, $backup_lock_file, O_RDWR | O_CREAT, 0600)
+        or return { 'status' => 'unknown' };
+
+    unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        if (defined $state && ($state->{'status'} // '') =~ /^(?:starting|running)$/) {
+            $state->{'status'} = 'running';
+            $state->{'finished_at'} = undef;
+            $state->{'exit_code'} = undef;
+            delete $state->{'error'};
+            return $state;
+        }
+
+        return {
+            'status' => 'running',
+            'started_at' => time(),
+            'finished_at' => undef,
+            'exit_code' => undef,
+        };
+    }
+
+    if (defined $state && ($state->{'status'} // '') =~ /^(?:starting|running)$/) {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'process_ended_unexpectedly';
+        $state->{'finished_at'} = time();
+        write_backup_operation_state($state);
+    }
+
+    close($lock_fh);
+
+    return $state if defined $state;
+    return {
+        'status' => 'idle',
+        'started_at' => undef,
+        'finished_at' => undef,
+        'exit_code' => undef,
+    };
+}
+
+sub backupiso_process_running {
+    my ($timestamp) = @_;
+    opendir(my $proc_dh, '/proc') or return 0;
+    my @pids = grep { /^\d+$/ } readdir($proc_dh);
+    closedir($proc_dh);
+
+    foreach my $pid (@pids) {
+        open(my $cmdline_fh, '<', "/proc/$pid/cmdline") or next;
+        local $/;
+        my $cmdline = <$cmdline_fh> // '';
+        close($cmdline_fh);
+        my @arguments = split(/\0/, $cmdline);
+        for (my $i = 0; $i < $#arguments; $i++) {
+            return 1 if $arguments[$i] eq '/usr/local/bin/backupiso'
+                && $arguments[$i + 1] eq $timestamp;
+        }
+    }
+
+    return 0;
+}
+
+sub wait_for_backup_iso {
+    my ($state, $backup_snapshot) = @_;
+    my $backup_timestamp;
+    my $discovery_deadline = time() + 30;
+
+    while (time() <= $discovery_deadline && !defined $backup_timestamp) {
+        my $system_backups = backup_files_in_directory($backup_directory) // [];
+        foreach my $backup (@{$system_backups}) {
+            my $filename = $backup->{'filename'};
+            next unless $filename =~ /^(\d{4}-\d\d-\d\d-\d\d:?\d\d)\.ipf$/;
+            next if exists $backup_snapshot->{$filename}
+                && $backup_snapshot->{$filename} == $backup->{'modified_at'};
+            $backup_timestamp = $1;
+            last;
+        }
+        sleep(1) unless defined $backup_timestamp;
+    }
+
+    unless (defined $backup_timestamp) {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'iso_backup_file_not_created';
+        $state->{'exit_code'} = 1;
+        return 0;
+    }
+
+    $state->{'backup_filename'} = "$backup_timestamp.ipf";
+    write_backup_operation_state($state);
+
+    my $iso_directory = '/var/tmp/backupiso';
+    my $iso_filename;
+    my $process_seen = 0;
+    my $launch_grace_deadline = time() + 30;
+
+    while (1) {
+        my @directory_stat = lstat($iso_directory);
+        if (@directory_stat && (($directory_stat[2] & S_IFMT) == S_IFDIR)) {
+            opendir(my $iso_dh, $iso_directory);
+            if ($iso_dh) {
+                foreach my $filename (readdir($iso_dh)) {
+                    if ($filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*-\Q$backup_timestamp\E\.iso$/) {
+                        my @stat = lstat("$iso_directory/$filename");
+                        if (@stat && (($stat[2] & S_IFMT) == S_IFREG)) {
+                            $iso_filename = $filename;
+                            last;
+                        }
+                    }
+                }
+                closedir($iso_dh);
+            }
+        }
+
+        my $process_running = backupiso_process_running($backup_timestamp);
+        $process_seen = 1 if $process_running;
+        if (!$process_running && defined $iso_filename) {
+            my @iso_stat = lstat("$iso_directory/$iso_filename");
+            my $valid_iso = 0;
+            if (@iso_stat && $iso_stat[7] > 32773) {
+                if (sysopen(my $iso_fh, "$iso_directory/$iso_filename", O_RDONLY | O_NOFOLLOW)) {
+                    if (seek($iso_fh, 32769, 0)) {
+                        my $identifier = '';
+                        my $read = read($iso_fh, $identifier, 5);
+                        $valid_iso = 1 if defined $read && $read == 5
+                            && $identifier eq 'CD001';
+                    }
+                    close($iso_fh);
+                }
+            }
+            if ($valid_iso) {
+                $state->{'iso_filename'} = $iso_filename;
+                $state->{'status'} = 'completed';
+                $state->{'exit_code'} = 0;
+                return 1;
+            }
+            $state->{'error'} = 'iso_creation_failed';
+            $state->{'exit_code'} = 1;
+            return 0;
+        }
+
+        if (!$process_running && !$process_seen && time() > $launch_grace_deadline) {
+            $state->{'error'} = 'iso_creation_not_started';
+            $state->{'exit_code'} = 1;
+            return 0;
+        }
+        if (!$process_running && $process_seen && !defined $iso_filename) {
+            $state->{'error'} = 'iso_creation_failed';
+            $state->{'exit_code'} = 1;
+            return 0;
+        }
+        sleep(5);
+    }
+}
+
+sub start_backup_creation {
+    my ($type, $logs, $addon) = @_;
+    my $backupctrl = '/usr/local/bin/backupctrl';
+
+    return { 'result' => 'error', 'error' => 'backupctrl_not_found' }
+        unless -x $backupctrl;
+    return { 'result' => 'error', 'error' => 'backup_runtime_unavailable' }
+        unless defined ensure_update_runtime_dir();
+
+    my @arguments;
+    my $state = {
+        'action' => 'create',
+        'type' => $type,
+        'status' => 'starting',
+        'started_at' => time(),
+        'finished_at' => undef,
+        'exit_code' => undef,
+    };
+
+    if (defined $type && $type eq 'system') {
+        return { 'result' => 'error', 'error' => 'invalid_backup_logs_option' }
+            unless defined $logs && ($logs eq 'include' || $logs eq 'exclude');
+        @arguments = ($logs);
+        $state->{'logs'} = $logs;
+    } elsif (defined $type && $type eq 'addon') {
+        return { 'result' => 'error', 'error' => 'invalid_addon_name' }
+            unless defined $addon && $addon =~ /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+        my $available_addons = addon_backup_names();
+        return { 'result' => 'error', 'error' => 'addon_backup_not_supported' }
+            unless defined $available_addons
+                && grep { $_ eq $addon } @{$available_addons};
+        @arguments = ('addonbackup', $addon);
+        $state->{'addon'} = $addon;
+    } elsif (defined $type && $type eq 'iso') {
+        @arguments = ('iso');
+    } else {
+        return { 'result' => 'error', 'error' => 'invalid_backup_type' };
+    }
+
+    sysopen(my $lock_fh, $backup_lock_file, O_RDWR | O_CREAT, 0600)
+        or return { 'result' => 'error', 'error' => 'backup_lock_unavailable' };
+    unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'backup_in_progress' };
+    }
+
+    unless (write_backup_operation_state($state)) {
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'backup_state_unavailable' };
+    }
+
+    my $pid = fork();
+    unless (defined $pid) {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'could_not_start_backup';
+        $state->{'finished_at'} = time();
+        write_backup_operation_state($state);
+        close($lock_fh);
+        return { 'result' => 'error', 'error' => 'could_not_start_backup' };
+    }
+
+    if ($pid == 0) {
+        eval { setsid(); };
+        $SIG{'HUP'} = 'IGNORE';
+        umask(0077);
+
+        close(STDIN);
+        close(STDOUT);
+        close(STDERR);
+        open(STDIN, '<', '/dev/null');
+        open(STDOUT, '>>', $backup_log_file) or open(STDOUT, '>', '/dev/null');
+        open(STDERR, '>&STDOUT');
+        $| = 1;
+
+        $state->{'status'} = 'running';
+        write_backup_operation_state($state);
+
+        my $backup_snapshot = {};
+        if (defined $type && $type eq 'iso') {
+            my $existing_backups = backup_files_in_directory($backup_directory) // [];
+            $backup_snapshot = {
+                map { $_->{'filename'} => $_->{'modified_at'} } @{$existing_backups}
+            };
+        }
+
+        my $result;
+        unless (chdir('/')) {
+            $state->{'status'} = 'failed';
+            $state->{'error'} = 'could_not_change_directory';
+            $state->{'exit_code'} = undef;
+        } else {
+            $result = system { $backupctrl } $backupctrl, @arguments;
+        }
+
+        if ($state->{'status'} eq 'failed') {
+            # Keep the chdir error recorded above.
+        } elsif (!defined $result || $result == -1) {
+            $state->{'status'} = 'failed';
+            $state->{'error'} = 'could_not_execute_backupctrl';
+        } elsif ($result & 127) {
+            $state->{'status'} = 'failed';
+            $state->{'error'} = 'backup_terminated_by_signal';
+            $state->{'exit_code'} = 128 + ($result & 127);
+        } elsif (($result >> 8) == 0 && defined $type && $type eq 'iso') {
+            if (!wait_for_backup_iso($state, $backup_snapshot)) {
+                $state->{'status'} = 'failed';
+            }
+        } else {
+            $state->{'exit_code'} = $result >> 8;
+            $state->{'status'} = $state->{'exit_code'} == 0 ? 'completed' : 'failed';
+            $state->{'error'} = 'backupctrl_failed' if $state->{'exit_code'} != 0;
+        }
+        $state->{'finished_at'} = time();
+        write_backup_operation_state($state);
+        close($lock_fh);
+        POSIX::_exit(0);
+    }
+
+    close($lock_fh);
+    return {
+        'result' => 'accepted',
+        'status' => 'running',
+        'started_at' => $state->{'started_at'},
+        'type' => $type,
+    };
+}
+
+sub download_backup {
+    my ($type, $filename) = @_;
+
+    my ($directory, $extension);
+    if (defined $type && $type eq 'system') {
+        $directory = $backup_directory;
+        $extension = 'ipf';
+    } elsif (defined $type && $type eq 'addon') {
+        $directory = $addon_backup_directory;
+        $extension = 'ipf';
+    } elsif (defined $type && $type eq 'iso') {
+        $directory = '/var/tmp/backupiso';
+        $extension = 'iso';
+    } else {
+        backup_action_error('400 Bad Request', 'invalid_backup_type');
+        return;
+    }
+
+    my $valid_filename = defined $filename
+        && ($extension eq 'iso'
+            ? $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*-\d{4}-\d\d-\d\d-\d\d:?\d\d\.iso$/
+            : $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*\.\Q$extension\E$/);
+    unless ($valid_filename) {
+        backup_action_error('400 Bad Request', 'invalid_backup_filename');
+        return;
+    }
+
+    my $path = "$directory/$filename";
+    my @path_stat = lstat($path);
+    unless (@path_stat && (($path_stat[2] & S_IFMT) == S_IFREG)) {
+        backup_action_error('404 Not Found', 'backup_not_found');
+        return;
+    }
+
+    sysopen(my $fh, $path, O_RDONLY | O_NOFOLLOW)
+        or do {
+            backup_action_error('404 Not Found', 'backup_not_found');
+            return;
+        };
+
+    my @file_stat = stat($fh);
+    unless (@file_stat && (($file_stat[2] & S_IFMT) == S_IFREG)) {
+        close($fh);
+        backup_action_error('404 Not Found', 'backup_not_found');
+        return;
+    }
+
+    binmode($fh);
+    binmode(STDOUT);
+    print "Content-Type: application/octet-stream\r\n";
+    print "Content-Disposition: attachment; filename=\"$filename\"\r\n";
+    print "Content-Length: $file_stat[7]\r\n";
+    print "Cache-Control: private, no-store\r\n";
+    print "X-Content-Type-Options: nosniff\r\n";
+    print "\r\n";
+
+    while (1) {
+        my $chunk;
+        my $read = read($fh, $chunk, 65536);
+        last unless defined $read && $read > 0;
+        print $chunk;
+    }
+
+    close($fh);
+}
+
+sub delete_backup {
+    my ($type, $filename) = @_;
+
+    my ($directory, $extension);
+    if (defined $type && $type eq 'system') {
+        $directory = $backup_directory;
+        $extension = 'ipf';
+    } elsif (defined $type && $type eq 'addon') {
+        $directory = $addon_backup_directory;
+        $extension = 'ipf';
+    } elsif (defined $type && $type eq 'iso') {
+        $directory = '/var/tmp/backupiso';
+        $extension = 'iso';
+    } else {
+        backup_action_error('400 Bad Request', 'invalid_backup_type');
+        return;
+    }
+
+    my $valid_filename = defined $filename
+        && ($extension eq 'iso'
+            ? $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*-\d{4}-\d\d-\d\d-\d\d:?\d\d\.iso$/
+            : $filename =~ /^[A-Za-z0-9][A-Za-z0-9._:-]*\.\Q$extension\E$/);
+    unless ($valid_filename) {
+        backup_action_error('400 Bad Request', 'invalid_backup_filename');
+        return;
+    }
+
+    my $path = "$directory/$filename";
+    my @path_stat = lstat($path);
+    unless (@path_stat && (($path_stat[2] & S_IFMT) == S_IFREG)) {
+        backup_action_error('404 Not Found', 'backup_not_found');
+        return;
+    }
+
+    my $backupctrl = '/usr/local/bin/backupctrl';
+    unless (-x $backupctrl) {
+        backup_action_error('500 Internal Server Error', 'backupctrl_not_found');
+        return;
+    }
+
+    sysopen(my $lock_fh, $backup_lock_file, O_RDWR | O_CREAT, 0600)
+        or do {
+            backup_action_error('500 Internal Server Error', 'backup_lock_unavailable');
+            return;
+        };
+    unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        close($lock_fh);
+        backup_action_error('409 Conflict', 'backup_in_progress');
+        return;
+    }
+
+    my $state = {
+        'action' => 'delete',
+        'type' => $type,
+        'filename' => $filename,
+        'status' => 'running',
+        'started_at' => time(),
+        'finished_at' => undef,
+        'exit_code' => undef,
+    };
+    unless (write_backup_operation_state($state)) {
+        close($lock_fh);
+        backup_action_error('500 Internal Server Error', 'backup_state_unavailable');
+        return;
+    }
+
+    my $result = &General::system($backupctrl, $path);
+    $state->{'exit_code'} = $result;
+    $state->{'finished_at'} = time();
+    if (defined $result && $result == 0) {
+        $state->{'status'} = 'completed';
+    } else {
+        $state->{'status'} = 'failed';
+        $state->{'error'} = 'backup_delete_failed';
+    }
+    write_backup_operation_state($state);
+    close($lock_fh);
+
+    if ($state->{'status'} ne 'completed') {
+        backup_action_error('500 Internal Server Error', 'backup_delete_failed');
+        return;
+    }
+
+    print "Status: 200 OK\r\n";
+    print_json_headers();
+    print encode_json({
+        'api_version' => int($api_version),
+        'api_revision' => $api_revision,
+        'result' => 'ok',
+        'action' => 'delete_backup',
+        'status' => 'completed',
+        'exit_code' => 0,
+        'type' => $type,
+        'filename' => $filename,
+    });
 }
 
 sub red_traffic_data {
@@ -1349,9 +1957,60 @@ sub addons_data {
     return %addons;
 }
 
+my $method = $ENV{'REQUEST_METHOD'} // 'GET';
+my $post_body = '';
+my $include_backups = (form_parameter($ENV{'QUERY_STRING'} // '', 'backup') // '') eq '1';
+
+if ($method eq 'POST') {
+    my $api_header = $ENV{'HTTP_X_IPFIRE_API'} // '';
+    my $legacy_api_header = $ENV{'HTTP_X_HA_IPFIRE_API'} // '';
+
+    if ($api_header ne '1' && $legacy_api_header ne '1') {
+        print_json_headers();
+        print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"forbidden"}';
+        exit 0;
+    }
+
+    my $content_length = $ENV{'CONTENT_LENGTH'} // 0;
+    if ($content_length =~ /^\d+$/ && $content_length > 0) {
+        read(STDIN, $post_body, $content_length);
+    }
+
+    my $requested_action = form_parameter($post_body, 'action') // '';
+    if ($requested_action eq 'download_backup') {
+        download_backup(
+            form_parameter($post_body, 'type'),
+            form_parameter($post_body, 'filename'),
+        );
+        exit 0;
+    }
+    if ($requested_action eq 'delete_backup') {
+        delete_backup(
+            form_parameter($post_body, 'type'),
+            form_parameter($post_body, 'filename'),
+        );
+        exit 0;
+    }
+    if ($requested_action eq 'create_backup') {
+        my $result = start_backup_creation(
+            form_parameter($post_body, 'type'),
+            form_parameter($post_body, 'logs'),
+            form_parameter($post_body, 'addon'),
+        );
+        print_json_headers();
+        print encode_json({
+            'api_version' => int($api_version),
+            'api_revision' => $api_revision,
+            %{$result},
+        });
+        exit 0;
+    }
+}
+
 my ($version, $core_update, $package_updates) = system_data();
 my $reboot_required = -e '/var/run/need_reboot' ? 1 : 0;
 my $available_updates = pakfire_updates_data();
+my $available_backups = backup_list_data() if $include_backups;
 my $update_operation = update_operation_data();
 my ($red_rx_bytes, $red_tx_bytes) = red_traffic_data();
 my ($cpu_total, $cpu_idle) = cpu_data();
@@ -1415,14 +2074,8 @@ my $apcupsd = apcupsd_data();
 # HTTP response
 # -----------------------------------------------------------------------------
 
-print "Content-Type: application/json; charset=utf-8\r\n";
-print "Cache-Control: no-store, no-cache, must-revalidate\r\n";
-print "Pragma: no-cache\r\n";
-print "\r\n";
-
-# The API provides system data, connection control, update installation, and
-# a guarded reboot action.
-my $method = $ENV{'REQUEST_METHOD'} // 'GET';
+# The API provides system data, connection control, update installation, a
+# guarded reboot action, and backup listing, creation, downloads, and deletion.
 
 # -----------------------------------------------------------------------------
 # Connection control
@@ -1443,29 +2096,24 @@ my $method = $ENV{'REQUEST_METHOD'} // 'GET';
 #   action=disconnect
 #   action=upgrade
 #   action=reboot
+#   action=download_backup&type=system|addon|iso&filename=<backup-filename>
+#   action=delete_backup&type=system|addon|iso&filename=<backup-filename>
+#   action=create_backup&type=system&logs=include|exclude
+#   action=create_backup&type=addon&addon=<addon-name>
+#   action=create_backup&type=iso
 #
 if ($method eq 'POST') {
     my $api_header = $ENV{'HTTP_X_IPFIRE_API'} // '';
     my $legacy_api_header = $ENV{'HTTP_X_HA_IPFIRE_API'} // '';
 
     if ($api_header ne '1' && $legacy_api_header ne '1') {
+        print_json_headers();
         print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"forbidden"}';
         exit 0;
     }
 
-    my $content_length = $ENV{'CONTENT_LENGTH'} // 0;
-    my $body = '';
-
-    if ($content_length =~ /^\d+$/ && $content_length > 0) {
-        read(STDIN, $body, $content_length);
-    }
-
-    my $action = '';
-    if ($body =~ /(?:^|&)action=([^&]*)/) {
-        $action = $1;
-        $action =~ tr/+/ /;
-        $action =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
-    }
+    print_json_headers();
+    my $action = form_parameter($post_body, 'action') // '';
 
     if ($action eq 'upgrade') {
         my $result = start_pakfire_upgrade();
@@ -1585,9 +2233,12 @@ if ($method eq 'POST') {
 }
 
 if ($method ne 'GET') {
+    print_json_headers();
     print '{"api_version":'.$api_version.',"api_revision":'.json_string($api_revision).',"error":"method_not_allowed"}';
     exit 0;
 }
+
+print_json_headers();
 
 # -----------------------------------------------------------------------------
 # Read IPFire connection information
@@ -1748,6 +2399,10 @@ push @json, '"updates":{"available":'
     . (defined $available_updates ? encode_json($available_updates) : 'null')
     . ',"operation":' . encode_json($update_operation)
     . '}';
+
+push @json, '"backups":'
+    . (defined $available_backups ? encode_json($available_backups) : 'null')
+    if $include_backups;
 
 my @network_json = (
     '"blue":' . ($blue ? 'true' : 'false'),

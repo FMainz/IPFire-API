@@ -21,6 +21,7 @@ Installing additional software on a firewall always carries some risk, including
   - [Connection control](#connection-control)
   - [Update installation](#update-installation)
   - [Reboot](#reboot)
+  - [Backup management](#backup-management)
   - [System parameters](#system-parameters)
     - [CPU](#cpu)
     - [Memory](#memory)
@@ -45,6 +46,7 @@ Installing additional software on a firewall always carries some risk, including
 - Status information for supported add-ons
 - Available IPFire core and package updates, with an authenticated action to start the Pakfire upgrade
 - Authenticated router reboot action when IPFire reports that a reboot is required
+- Create, list, download, and delete system and add-on backups remotely; start ISO backup creation
 - RED traffic counters
 - Internet connection state and details
 - Connect and disconnect actions through IPFire's native `redctrl`
@@ -75,7 +77,7 @@ The endpoint is:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-An authenticated `GET` request returns the current data as JSON. The response uses API version `1`, reports the `api.cgi` script revision in `api_revision`, and includes `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `api_version` describes the JSON interface; `api_revision` is the script version from the file header. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`.
+An authenticated `GET` request returns the current data as JSON. The response uses API version `1`, reports the `api.cgi` script revision in `api_revision`, and includes `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection`, and `certificates` sections. The `api_version` describes the JSON interface; `api_revision` is the script version from the file header. The `addons` section is included only when supported add-ons with services are installed. Unavailable measurements are returned as `null` where applicable; unavailable add-on and service states are reported as `false`. The backup directories are scanned only when the request includes `?backup=1`; then the response also contains `backups`.
 
 All authenticated `POST` actions require the `X-IPFire-API: 1` header. For compatibility with existing clients, the legacy `X-HA-IPFire-API: 1` header is also accepted.
 
@@ -132,6 +134,65 @@ An authenticated `POST` request with `action=reboot` asks IPFire to restart. The
 curl --user '<webgui-user>' \
   --header 'X-IPFire-API: 1' \
   --data-urlencode 'action=reboot' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+### Backup management
+
+The `backups` object is included only in an authenticated `GET` request ending in `?backup=1`. This keeps routine API polling from scanning the backup directories. It contains a `system` array of full system backup files (`.ipf`) from `/var/ipfire/backup`, newest first. Each entry contains the filename, file size in bytes, and modification time as a Unix timestamp. If IPFire lists add-ons with backup support, `addons_available` contains their names, including add-ons that do not yet have a saved backup. If add-on backup files are present in `/var/ipfire/backup/addons/backup`, an `addons` array is also included with their file metadata and add-on name. Add-on backups contain configuration files, not the installed add-on packages. An empty `system` array means no system backups are available; `null` means the system backup directory could not be read. The `operation` object reports the most recent backup creation, deletion, or ISO creation started through the API. IPFire creates ISO images locally using its native backup method. The [official IPFire backup documentation](https://www.ipfire.org/docs/configuration/system/backup) does not document HTTP/API access for listing or downloading generated ISO files. Use `https://<ipfire-host>:444/cgi-bin/api.cgi?backup=1` to list backups or poll `backups.operation`.
+
+To create a system backup, send an authenticated `POST` request with `action=create_backup`, `type=system`, and `logs=include` or `logs=exclude`. The API starts the task in the background and returns `result: "accepted"`; poll `backups.operation` from `GET ...?backup=1` until its status is `completed` or `failed`. Including logs can take considerably longer. Example without logs:
+
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'logs=exclude' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+To create an add-on configuration backup, use `type=addon` and the add-on package name:
+
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=addon' \
+  --data-urlencode 'addon=wio' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+To create a remastered installer ISO containing the current system backup, use `type=iso`. IPFire downloads its base installer image when needed, so this can take a long time and requires an internet connection and sufficient free disk space. Poll `backups.operation` through `GET ...?backup=1`; the operation remains `running` until the ISO creation process finishes:
+
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=create_backup' \
+  --data-urlencode 'type=iso' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+To download a listed backup, send an authenticated `POST` request with `action=download_backup`, its `type` (`system` or `addon`), and the exact `filename`. The response is the file itself, so use `curl --output` to save it:
+
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=download_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'filename=2026-11-12-1200.ipf' \
+  --output '2026-11-12-1200.ipf' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+To delete a listed backup, send an authenticated `POST` request with `action=delete_backup`, its `type` (`system` or `addon`), and the exact `filename`. A successful request returns JSON with `result: "ok"`; `backups.operation` then reports the completed deletion, including its type and filename. Deletion is permanent; verify the type and filename before sending the request:
+
+```sh
+curl --user '<webgui-user>' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=delete_backup' \
+  --data-urlencode 'type=system' \
+  --data-urlencode 'filename=2026-11-08-1724.ipf' \
   'https://<ipfire-host>:444/cgi-bin/api.cgi'
 ```
 
@@ -375,7 +436,7 @@ The `system` section provides the existing update summary. The `updates` section
 
 ## Security
 
-Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. `POST` requests can change the internet connection state, install IPFire updates, or reboot the router when required.
+Keep this endpoint behind IPFire's authenticated web interface. Do not expose it to untrusted networks. System and add-on backups and remastered installer ISOs contain sensitive configuration data; protect downloaded files accordingly. Backup deletion is permanent. `POST` requests can change the internet connection state, install IPFire updates, create, download, or delete backups, or reboot the router when required.
 
 ### Support
 
