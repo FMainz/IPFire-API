@@ -31,6 +31,7 @@ Installing additional software on a firewall always carries some risk, including
     - [SMART](#smart)
     - [lm_sensors](#lm_sensors)
   - [Network](#network)
+    - [Hosts file](#hosts-file)
     - [DNS servers](#dns-servers)
     - [VLANs](#vlans)
     - [Neighbors](#neighbors)
@@ -314,6 +315,19 @@ The `interfaces` object contains data for each configured zone, read from IPFire
 | `link_detected` | Whether a physical link is detected |
 
 `rx_bytes` and `tx_bytes` are cumulative counters read from `/sys/class/net/<device>/statistics/`; clients can calculate rates by comparing successive readings. An interface entry is `null` when no assigned device is present. If the device exists but has no physical link, its supported and advertised modes may still be available while `speed_mbps` and `duplex` are `null`.
+
+#### Hosts file
+
+The optional `network.hosts` array reads static host mappings from IPFire's `/var/ipfire/main/hosts` file. It also includes disabled entries, whose `enabled` value is `false`. Dynamic DHCP leases remain separate under `dhcp.leases`. If the file cannot be read, `hosts` is omitted; a readable but empty file produces an empty array.
+
+| Field | Description |
+| --- | --- |
+| `enabled` | Whether IPFire uses the entry |
+| `ip_address` | Mapped IP address |
+| `hostname` | Hostname |
+| `domain` | Configured domain, when present |
+| `fqdn` | Hostname with its domain, when present |
+| `ptr_enabled` | Whether IPFire should generate a PTR record |
 
 #### DNS servers
 

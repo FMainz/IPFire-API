@@ -31,6 +31,7 @@ Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem g
     - [SMART](#smart)
     - [lm_sensors](#lm_sensors)
   - [Netzwerk](#netzwerk)
+    - [Hosts-Datei](#hosts-datei)
     - [DNS-Server](#dns-server)
     - [VLANs](#vlans)
     - [Nachbartabelle](#nachbartabelle)
@@ -315,6 +316,19 @@ Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFi
 | `link_detected` | Gibt an, ob ein physischer Link erkannt wird |
 
 `rx_bytes` und `tx_bytes` sind kumulative Zähler aus `/sys/class/net/<device>/statistics/`. Clients können durch den Vergleich aufeinanderfolgender Werte die Übertragungsrate berechnen. Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
+
+#### Hosts-Datei
+
+Das optionale Array `network.hosts` liest die statischen Hostzuordnungen aus IPFires `/var/ipfire/main/hosts`. Es enthält auch deaktivierte Einträge; deren `enabled`-Wert ist `false`. Dynamische DHCP-Leases werden weiterhin getrennt unter `dhcp.leases` ausgegeben. Wenn die Datei nicht lesbar ist, wird `hosts` weggelassen; eine lesbare, leere Datei ergibt ein leeres Array.
+
+| Feld | Beschreibung |
+| --- | --- |
+| `enabled` | Gibt an, ob IPFire den Eintrag verwendet |
+| `ip_address` | Zugeordnete IP-Adresse |
+| `hostname` | Hostname |
+| `domain` | Zugeordnete Domain, sofern eingetragen |
+| `fqdn` | Hostname mit Domain, falls vorhanden |
+| `ptr_enabled` | Gibt an, ob IPFire einen PTR-Eintrag erzeugen soll |
 
 #### DNS-Server
 

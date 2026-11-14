@@ -3,7 +3,7 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire-API version 0.2.14                                                   #
+# IPFire-API version 0.2.15                                                   #
 #                                                                             #
 # This CGI provides system, network, DNS, service, add-on, UPS, traffic,       #
 # backup, and connection information from IPFire for integrations and clients. #
@@ -21,7 +21,7 @@ use JSON::PP;
 use Time::Local qw(timegm);
 
 my $api_version = "1";
-my $api_revision = "0.2.14"; # Keep in sync with the version in the file header.
+my $api_revision = "0.2.15"; # Keep in sync with the version in the file header.
 my $backup_directory = '/var/ipfire/backup';
 my $addon_backup_directory = '/var/ipfire/backup/addons/backup';
 my $addon_include_directory = '/var/ipfire/backup/addons/includes';
@@ -1983,6 +1983,41 @@ sub network_vlans_data {
     return \@vlans;
 }
 
+sub network_hosts_data {
+    my $hosts_file = "${General::swroot}/main/hosts";
+    return undef unless -r $hosts_file;
+
+    open(my $fh, '<', $hosts_file) or return undef;
+    my @hosts;
+
+    while (my $line = <$fh>) {
+        chomp $line;
+        $line =~ s/\r$//;
+        next if $line =~ /^\s*(?:#|$)/;
+
+        my @fields = split(/,/, $line, -1);
+        next unless @fields >= 5;
+
+        my ($enabled, $address, $hostname, $domain, $ptr) = @fields;
+        next unless defined $address && length $address;
+        next unless defined $hostname && length $hostname;
+
+        my $fqdn = length($domain // '') ? "$hostname.$domain" : $hostname;
+        my %entry = (
+            'enabled' => ($enabled // '') eq 'on' ? JSON::PP::true() : JSON::PP::false(),
+            'ip_address' => $address,
+            'hostname' => $hostname,
+            'fqdn' => $fqdn,
+            'ptr_enabled' => ($ptr // '') eq 'off' ? JSON::PP::false() : JSON::PP::true(),
+        );
+        $entry{'domain'} = $domain if defined $domain && length $domain;
+        push @hosts, \%entry;
+    }
+
+    close($fh);
+    return \@hosts;
+}
+
 sub apcupsd_data {
     my @candidates = qw(/usr/sbin/apcaccess /sbin/apcaccess /usr/bin/apcaccess);
     my ($apcaccess) = grep { -x $_ } @candidates;
@@ -2303,6 +2338,7 @@ my $dhcp_leases = dhcp_leases_data();
 my %addons = addons_data();
 my $network_interfaces = network_interfaces_data();
 my $network_vlans = network_vlans_data();
+my $network_hosts = network_hosts_data();
 my $network_neighbours = network_neighbours_data();
 my $network_routes = ip_route_table_data('route', 'show');
 my $ipsec_routes = ip_route_table_data('route', 'list', 'table', '220');
@@ -2656,6 +2692,8 @@ push @network_json, '"ipsec_routes":' . encode_json($ipsec_routes)
     if defined $ipsec_routes && @{$ipsec_routes};
 push @network_json, '"vlans":' . encode_json($network_vlans)
     if defined $network_vlans && @{$network_vlans};
+push @network_json, '"hosts":' . encode_json($network_hosts)
+    if defined $network_hosts;
 push @network_json, '"dns":' . encode_json(dns_config_data($include_dns_details));
 push @json, '"network":{' . join(',', @network_json) . '}';
 
