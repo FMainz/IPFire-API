@@ -3,10 +3,10 @@
 # Copyright (C) 2026 FMainz
 ###############################################################################
 #                                                                             #
-# IPFire-API version 0.2.13                                                   #
+# IPFire-API version 0.2.14                                                   #
 #                                                                             #
-# This CGI provides system, network, service, add-on, UPS, traffic, backup,    #
-# and connection information from IPFire for integrations and other clients.   #
+# This CGI provides system, network, DNS, service, add-on, UPS, traffic,       #
+# backup, and connection information from IPFire for integrations and clients. #
 #                                                                             #
 ###############################################################################
 
@@ -21,7 +21,7 @@ use JSON::PP;
 use Time::Local qw(timegm);
 
 my $api_version = "1";
-my $api_revision = "0.2.13"; # Keep in sync with the version in the file header.
+my $api_revision = "0.2.14"; # Keep in sync with the version in the file header.
 my $backup_directory = '/var/ipfire/backup';
 my $addon_backup_directory = '/var/ipfire/backup/addons/backup';
 my $addon_include_directory = '/var/ipfire/backup/addons/includes';
@@ -53,6 +53,28 @@ sub json_escape {
 sub json_string {
     my ($value) = @_;
     return '"' . json_escape($value) . '"';
+}
+
+sub dns_escape_remark {
+    my ($value) = @_;
+    $value //= '';
+    $value =~ s/&/&amp;/g;
+    $value =~ s/</&lt;/g;
+    $value =~ s/>/&gt;/g;
+    $value =~ s/"/&quot;/g;
+    $value =~ s/'/&#39;/g;
+    return $value;
+}
+
+sub dns_unescape_remark {
+    my ($value) = @_;
+    $value //= '';
+    $value =~ s/&quot;/"/g;
+    $value =~ s/&#39;/'/g;
+    $value =~ s/&gt;/>/g;
+    $value =~ s/&lt;/</g;
+    $value =~ s/&amp;/&/g;
+    return $value;
 }
 
 sub read_file {
@@ -110,6 +132,188 @@ sub form_parameter {
 
     return undef unless @values == 1;
     return $values[0];
+}
+
+sub dns_config_data {
+    my ($include_details) = @_;
+    my $settings_file = "${General::swroot}/dns/settings";
+    my $servers_file = "${General::swroot}/dns/servers";
+    my %settings = (
+        'USE_ISP_NAMESERVERS' => 'off',
+        'PROTO' => 'UDP',
+        'ENABLE_SAFE_SEARCH' => 'off',
+        'ENABLE_SAFE_SEARCH_YOUTUBE' => 'on',
+    );
+    eval { &General::readhash($settings_file, \%settings) if -f $settings_file; };
+
+    my %manual_servers;
+    eval { &General::readhasharray($servers_file, \%manual_servers) if -f $servers_file; };
+    my @configured;
+    my @enabled;
+    for my $id (sort { $a <=> $b } keys %manual_servers) {
+        next unless $id =~ /^\d+$/ && ref($manual_servers{$id}) eq 'ARRAY';
+        my ($address, $tls_hostname, $status, $remark) = @{$manual_servers{$id}};
+        my $entry = {
+            'id' => int($id), 'address' => $address // '', 'source' => 'manual',
+            'enabled' => (($status // '') eq 'enabled') ? JSON::PP::true : JSON::PP::false,
+        };
+        $entry->{'tls_hostname'} = $tls_hostname if defined $tls_hostname && $tls_hostname ne '';
+        $entry->{'remark'} = dns_unescape_remark($remark) if defined $remark && $remark ne '';
+        push @configured, $entry;
+        push @enabled, $entry if ($status // '') eq 'enabled';
+    }
+
+    my $use_isp = ($settings{'USE_ISP_NAMESERVERS'} // 'off') eq 'on';
+    for my $index (1 .. 2) {
+        my $address = read_file("/var/run/dns$index");
+        next unless defined $address && $address =~ /^[0-9a-fA-F:.]+$/;
+        my $entry = {
+            'id' => "isp$index", 'address' => $address, 'source' => 'isp',
+            'enabled' => $use_isp ? JSON::PP::true : JSON::PP::false,
+        };
+        push @configured, $entry;
+        push @enabled, $entry if $use_isp;
+    }
+
+    my $result = { 'enabled_servers' => \@enabled };
+    if ($include_details) {
+        $result->{'configured_servers'} = \@configured;
+        $result->{'settings'} = {
+            'use_isp_nameservers' => $use_isp ? JSON::PP::true : JSON::PP::false,
+            'protocol' => $settings{'PROTO'} // 'UDP',
+            'enable_safe_search' => (($settings{'ENABLE_SAFE_SEARCH'} // 'off') eq 'on') ? JSON::PP::true : JSON::PP::false,
+            'enable_safe_search_youtube' => (($settings{'ENABLE_SAFE_SEARCH_YOUTUBE'} // 'off') eq 'on') ? JSON::PP::true : JSON::PP::false,
+        };
+    }
+    return $result;
+}
+
+sub check_dns_servers {
+    my $dns = dns_config_data(1);
+    my $settings = $dns->{'settings'};
+    my @checks;
+
+    for my $server (@{$dns->{'enabled_servers'}}) {
+        my @command = ('/usr/bin/kdig', '+dnssec', '+bufsize=1232', '+time=3', '+retry=0');
+        if ($settings->{'protocol'} eq 'TCP') {
+            push @command, '+tcp';
+        } elsif ($settings->{'protocol'} eq 'TLS') {
+            push @command, '+tls-ca=/etc/ssl/certs/ca-bundle.crt';
+            push @command, '+tls-hostname=' . ($server->{'tls_hostname'} // '');
+        }
+        push @command, '@' . $server->{'address'}, 'ping.ipfire.org', 'A';
+
+        my $output = '';
+        my $ok = 0;
+        if (open(my $fh, '-|', @command)) {
+            local $/;
+            $output = <$fh> // '';
+            $ok = close($fh) ? 1 : 0;
+        }
+        push @checks, {
+            'id' => $server->{'id'},
+            'address' => $server->{'address'},
+            'source' => $server->{'source'},
+            'status' => ($ok && $output =~ /ANSWER SECTION:/) ? 'working' : 'failed',
+        };
+    }
+
+    return {
+        'result' => 'completed',
+        'tested_at' => time(),
+        'checks' => \@checks,
+    };
+}
+
+sub update_dns_configuration {
+    my ($body) = @_;
+    my $action = form_parameter($body, 'action') // '';
+    my $settings_file = "${General::swroot}/dns/settings";
+    my $servers_file = "${General::swroot}/dns/servers";
+    return { 'result' => 'error', 'error' => 'dns_config_unavailable' }
+        unless -d "${General::swroot}/dns";
+    my $dnsctrl = '/usr/local/bin/dnsctrl';
+    return { 'result' => 'error', 'error' => 'dnsctrl_not_found' } unless -x $dnsctrl;
+
+    my %settings = (
+        'USE_ISP_NAMESERVERS' => 'off', 'PROTO' => 'UDP',
+        'ENABLE_SAFE_SEARCH' => 'off', 'ENABLE_SAFE_SEARCH_YOUTUBE' => 'on',
+    );
+    eval { &General::readhash($settings_file, \%settings) if -f $settings_file; };
+    my %servers;
+    eval { &General::readhasharray($servers_file, \%servers) if -f $servers_file; };
+
+    if ($action eq 'dns_save_settings') {
+        my $protocol = form_parameter($body, 'protocol') // '';
+        for my $field (qw(use_isp_nameservers enable_safe_search enable_safe_search_youtube)) {
+            my $value = form_parameter($body, $field) // '';
+            return { 'result' => 'error', 'error' => 'invalid_boolean_value' }
+                unless $value eq 'true' || $value eq 'false';
+        }
+        return { 'result' => 'error', 'error' => 'invalid_protocol' }
+            unless $protocol =~ /^(?:UDP|TCP|TLS)$/;
+        my $use_isp = (form_parameter($body, 'use_isp_nameservers') // '') eq 'true' ? 'on' : 'off';
+        return { 'result' => 'error', 'error' => 'isp_nameservers_tls_not_allowed' }
+            if $use_isp eq 'on' && $protocol eq 'TLS';
+        if ($protocol eq 'TLS') {
+            for my $server (values %servers) {
+                return { 'result' => 'error', 'error' => 'tls_hostname_required' }
+                    if ($server->[2] // '') eq 'enabled' && !($server->[1] // '');
+            }
+        }
+        $settings{'USE_ISP_NAMESERVERS'} = $use_isp;
+        $settings{'PROTO'} = $protocol;
+        $settings{'ENABLE_SAFE_SEARCH'} = (form_parameter($body, 'enable_safe_search') // '') eq 'true' ? 'on' : 'off';
+        $settings{'ENABLE_SAFE_SEARCH_YOUTUBE'} = (form_parameter($body, 'enable_safe_search_youtube') // '') eq 'true' ? 'on' : 'off';
+        eval { &General::writehash($settings_file, \%settings); };
+        return { 'result' => 'error', 'error' => 'dns_settings_write_failed' } if $@;
+    } elsif ($action eq 'dns_add_server' || $action eq 'dns_edit_server') {
+        my $id = form_parameter($body, 'id');
+        return { 'result' => 'error', 'error' => 'invalid_server_id' }
+            if $action eq 'dns_edit_server' && (!defined $id || $id !~ /^\d+$/ || $id < 3 || !exists $servers{$id});
+        my $address = form_parameter($body, 'address') // '';
+        my $tls_hostname = form_parameter($body, 'tls_hostname') // '';
+        my $remark = form_parameter($body, 'remark') // '';
+        return { 'result' => 'error', 'error' => 'invalid_server_address' }
+            unless &General::validip($address);
+        return { 'result' => 'error', 'error' => 'invalid_tls_hostname' }
+            if $tls_hostname ne '' && !&General::validfqdn($tls_hostname);
+        return { 'result' => 'error', 'error' => 'tls_hostname_required' }
+            if $settings{'PROTO'} eq 'TLS' && $tls_hostname eq '';
+        return { 'result' => 'error', 'error' => 'invalid_remark' }
+            if $remark =~ /[,\r\n]/;
+        $remark = dns_escape_remark($remark);
+        if ($action eq 'dns_add_server') {
+            my @ids = sort { $a <=> $b } grep { /^\d+$/ && $_ >= 3 } keys %servers;
+            $id = @ids ? $ids[-1] + 1 : 3;
+            $servers{$id} = [$address, $tls_hostname, 'enabled', $remark];
+        } else {
+            my $status = $servers{$id}[2] // 'disabled';
+            $servers{$id} = [$address, $tls_hostname, $status, $remark];
+        }
+    } elsif ($action eq 'dns_toggle_server') {
+        my $id = form_parameter($body, 'id');
+        my $enabled = form_parameter($body, 'enabled') // '';
+        return { 'result' => 'error', 'error' => 'invalid_server_id' }
+            unless defined $id && $id =~ /^\d+$/ && $id >= 3 && exists $servers{$id};
+        return { 'result' => 'error', 'error' => 'invalid_enabled_value' }
+            unless $enabled eq 'true' || $enabled eq 'false';
+        $servers{$id}[2] = $enabled eq 'true' ? 'enabled' : 'disabled';
+    } elsif ($action eq 'dns_delete_server') {
+        my $id = form_parameter($body, 'id');
+        return { 'result' => 'error', 'error' => 'invalid_server_id' }
+            unless defined $id && $id =~ /^\d+$/ && $id >= 3 && exists $servers{$id};
+        delete $servers{$id};
+    } else {
+        return { 'result' => 'error', 'error' => 'invalid_action' };
+    }
+
+    if ($action ne 'dns_save_settings') {
+        eval { &General::writehasharray($servers_file, \%servers); };
+        return { 'result' => 'error', 'error' => 'dns_servers_write_failed' } if $@;
+    }
+    &General::system_background($dnsctrl, 'reload');
+    return { 'result' => 'accepted', 'status' => 'reload_scheduled', 'action' => $action };
 }
 
 sub backup_files_in_directory {
@@ -730,6 +934,26 @@ sub system_data {
         $core_update,
         $package_updates,
     );
+}
+
+sub lm_sensors_data {
+    my $sensors_command = '/usr/bin/sensors';
+    return undef unless -x $sensors_command;
+
+    my $output = '';
+
+    if (open(my $fh, '-|', $sensors_command, '-j')) {
+        local $/;
+        $output = <$fh> // '';
+        return undef unless close($fh);
+    } else {
+        return undef;
+    }
+
+    my $data = eval { decode_json($output) };
+    return undef if $@ || ref($data) ne 'HASH' || !keys %{$data};
+
+    return $data;
 }
 
 sub pakfire_updates_data {
@@ -1960,6 +2184,7 @@ sub addons_data {
 my $method = $ENV{'REQUEST_METHOD'} // 'GET';
 my $post_body = '';
 my $include_backups = (form_parameter($ENV{'QUERY_STRING'} // '', 'backup') // '') eq '1';
+my $include_dns_details = (form_parameter($ENV{'QUERY_STRING'} // '', 'dns') // '') eq '1';
 
 if ($method eq 'POST') {
     my $api_header = $ENV{'HTTP_X_IPFIRE_API'} // '';
@@ -2005,6 +2230,18 @@ if ($method eq 'POST') {
         });
         exit 0;
     }
+    if ($requested_action eq 'dns_check_servers') {
+        my $result = check_dns_servers();
+        print_json_headers();
+        print encode_json({ 'api_version' => int($api_version), 'api_revision' => $api_revision, %{$result} });
+        exit 0;
+    }
+    if ($requested_action =~ /^dns_(?:add_server|edit_server|toggle_server|delete_server|save_settings)$/) {
+        my $result = update_dns_configuration($post_body);
+        print_json_headers();
+        print encode_json({ 'api_version' => int($api_version), 'api_revision' => $api_revision, %{$result} });
+        exit 0;
+    }
 }
 
 my ($version, $core_update, $package_updates) = system_data();
@@ -2018,6 +2255,7 @@ my $uptime = uptime_data();
 my %apache_certificate = apache_certificate_data();
 my $openvpn_client_certificates = openvpn_client_certificates_data();
 my $smart = smart_data();
+my $lm_sensors = lm_sensors_data();
 
 my ($memory_total,
     $memory_available,
@@ -2393,6 +2631,7 @@ push @json, '"system":{'
     . '}'
     . '}'
     . ',"smart":' . (defined $smart ? $smart : 'null')
+    . (defined $lm_sensors ? ',"sensors":' . encode_json($lm_sensors) : '')
     . '}';
 
 push @json, '"updates":{"available":'
@@ -2417,6 +2656,7 @@ push @network_json, '"ipsec_routes":' . encode_json($ipsec_routes)
     if defined $ipsec_routes && @{$ipsec_routes};
 push @network_json, '"vlans":' . encode_json($network_vlans)
     if defined $network_vlans && @{$network_vlans};
+push @network_json, '"dns":' . encode_json(dns_config_data($include_dns_details));
 push @json, '"network":{' . join(',', @network_json) . '}';
 
 push @json, '"dhcp":{"leases":'

@@ -5,6 +5,8 @@
 [![Stars](https://img.shields.io/github/stars/FMainz/IPFire-API)](https://github.com/FMainz/IPFire-API/stargazers)
 # IPFire-API
 
+![IPFire-API-Logo](assets/ipfire-api-logo-final.svg)
+
 Diese Dokumentation ist auf 🇩🇪 Deutsch und 🇬🇧 [Englisch](README.md) verfügbar.
 
 IPFire-API ist eine Schnittstelle für IPFire, die ausgewählte System-, Netzwerk-, Dienst-, Add-on-, USV-, Traffic- und Internetverbindungsdaten im JSON-Format bereitstellt. Außerdem bietet sie authentifizierte Steuerungsmöglichkeiten: Die RED-Verbindung kann online oder offline geschaltet, die Installation verfügbarer Updates aus der Ferne gestartet und ein Neustart angefordert werden, wenn IPFire ihn als erforderlich meldet.
@@ -27,7 +29,9 @@ Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem g
     - [Arbeitsspeicher](#arbeitsspeicher)
     - [Festplatte](#festplatte)
     - [SMART](#smart)
+    - [lm_sensors](#lm_sensors)
   - [Netzwerk](#netzwerk)
+    - [DNS-Server](#dns-server)
     - [VLANs](#vlans)
     - [Nachbartabelle](#nachbartabelle)
     - [Routingtabellen](#routingtabellen)
@@ -42,7 +46,7 @@ Die Installation zusätzlicher Software auf einer Firewall ist immer mit einem g
 
 ## Funktionen
 
-- Informationen zu System, CPU, Arbeitsspeicher, Festplatte, SMART, USV und Zertifikaten
+- Informationen zu System, CPU, Arbeitsspeicher, Festplatte, SMART und `lm_sensors` sowie zu Netzwerk, Diensten, USV und Zertifikaten
 - Status der Netzwerkschnittstellen und IPFire-Dienste
 - Status unterstützter Add-ons
 - Verfügbare IPFire-Core- und Paket-Updates sowie authentifizierter Start des Pakfire-Upgrade
@@ -78,7 +82,7 @@ Die API ist unter folgender Adresse erreichbar:
 https://<ipfire-host>:444/cgi-bin/api.cgi
 ```
 
-Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1`, gibt die Revision des `api.cgi`-Scripts unter `api_revision` aus und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. `api_version` bezeichnet die Version der JSON-Schnittstelle; `api_revision` entspricht der Script-Version im Dateikopf. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`. Die Backup-Verzeichnisse werden nur durchsucht, wenn die Anfrage `?backup=1` enthält; dann wird auch `backups` ausgegeben.
+Eine authentifizierte `GET`-Anfrage liefert die aktuellen Daten als JSON. Die Antwort verwendet API-Version `1`, gibt die Revision des `api.cgi`-Scripts unter `api_revision` aus und enthält die Bereiche `system`, `network`, `dhcp`, `updates`, `services`, `ups`, `traffic`, `connection` und `certificates`. `api_version` bezeichnet die Version der JSON-Schnittstelle; `api_revision` entspricht der Script-Version im Dateikopf. Der Bereich `addons` wird nur ausgegeben, wenn unterstützte Add-ons mit Diensten installiert sind. Nicht verfügbare Messwerte werden als `null` ausgegeben. Nicht erkannte Add-on- und Dienststatus erscheinen als `false`. Die Backup-Verzeichnisse werden nur durchsucht, wenn die Anfrage `?backup=1` enthält; dann wird auch `backups` ausgegeben. Im Abschnitt `network` stehen die aktivierten DNS-Server. Mit `?dns=1` werden zusätzlich die vollständige DNS-Konfiguration und deaktivierte Server ausgegeben.
 
 Alle authentifizierten `POST`-Aktionen benötigen den Header `X-IPFire-API: 1`. Aus Gründen der Abwärtskompatibilität wird auch der bisherige Header `X-HA-IPFire-API: 1` akzeptiert.
 
@@ -270,6 +274,10 @@ SMART-Informationen werden für die Systemfestplatte bereitgestellt. Das Ergebni
 | `power_cycles` | Anzahl der Einschaltzyklen |
 | `temperature` | Festplattentemperatur |
 
+#### lm_sensors
+
+Wenn `/usr/bin/sensors` vorhanden ist und `sensors -j` gültiges, nicht leeres JSON liefert, enthält `system.sensors` die Messwerte. Chipnamen, Adapter, Messwertbezeichnungen und verfügbare Felder hängen von Hardware und Treibern ab. Die API übernimmt Feldnamen und Werte aus `sensors -j`; `*_input` enthält aktuelle Messwerte. Angaben wie `*_max`, `*_crit` und `*_crit_alarm` werden übernommen, wenn der Treiber sie bereitstellt. Das Feld `sensors` wird weggelassen, wenn der Befehl fehlt oder keine verwendbaren Daten liefert.
+
 ### Netzwerk
 
 Der Abschnitt `network` meldet die konfigurierten IPFire-Netzwerkzonen und Informationen zu den zugeordneten Geräten. Die booleschen Zonenwerte zeigen an, ob eine Zone im IPFire-Hardwareprofil vorhanden ist. Sie geben nicht den aktuellen physischen Linkstatus an.
@@ -307,6 +315,46 @@ Das Objekt `interfaces` enthält für jede konfigurierte Zone Daten aus den IPFi
 | `link_detected` | Gibt an, ob ein physischer Link erkannt wird |
 
 `rx_bytes` und `tx_bytes` sind kumulative Zähler aus `/sys/class/net/<device>/statistics/`. Clients können durch den Vergleich aufeinanderfolgender Werte die Übertragungsrate berechnen. Der Eintrag einer Zone ist `null`, wenn kein zugeordnetes Gerät vorhanden ist. Existiert das Gerät, aber es besteht kein physischer Link, können unterstützte und angebotene Modi trotzdem verfügbar sein; `speed_mbps` und `duplex` sind dann `null`.
+
+#### DNS-Server
+
+`network.dns.enabled_servers` enthält die aktivierten DNS-Server, die IPFire verwenden darf. Das sind konfigurierte Resolver-Kandidaten; Unbound kann abhängig von Erreichbarkeit und Antwortzeit zwischen ihnen wählen. Der Eintrag enthält `id`, `address`, `source` (`manual` oder `isp`) und `enabled`.
+
+Mit `?dns=1` enthält `network.dns` zusätzlich `configured_servers` mit allen manuellen Einträgen und den vom Provider zugewiesenen Servern sowie `settings` mit `use_isp_nameservers`, `protocol`, `enable_safe_search` und `enable_safe_search_youtube`. ISP-Server werden aus `/var/run/dns1` und `/var/run/dns2` gelesen. Die vollständigen DNS-Daten werden ohne diesen Parameter nicht ermittelt.
+
+DNS-Einstellungen lassen sich ausschließlich über authentifizierte `POST`-Anfragen ändern; dafür ist kein `?dns=1` nötig. `dns_check_servers` prüft die aktivierten Resolver-Kandidaten ausdrücklich auf eine DNS-Antwort für `ping.ipfire.org`; die Prüfung läuft nie bei einem normalen `GET`. Unterstützte Aktionen und Formulardaten:
+
+| Aktion | Erforderliche Felder | Optionale Felder |
+| --- | --- | --- |
+| `dns_check_servers` | – | – |
+| `dns_add_server` | `address` | `tls_hostname`, `remark` |
+| `dns_edit_server` | `id`, `address` | `tls_hostname`, `remark` |
+| `dns_toggle_server` | `id`, `enabled` (`true` oder `false`) | – |
+| `dns_delete_server` | `id` | – |
+| `dns_save_settings` | `protocol` (`UDP`, `TCP` oder `TLS`), `use_isp_nameservers`, `enable_safe_search`, `enable_safe_search_youtube` (jeweils `true` oder `false`) | – |
+
+Manuelle Server-IDs beginnen bei `3`; ISP-Server können nicht bearbeitet oder gelöscht werden. Serveradressen müssen gültige IP-Adressen sein. Bei Protokoll `TLS` ist für jeden aktivierten manuellen Server ein TLS-Hostname erforderlich; ISP-DNS zusammen mit TLS wird abgelehnt. Nach einer Änderung stößt die API das Neuladen der DNS-Konfiguration wie die IPFire-Weboberfläche an. Die Antwort bestätigt, dass das Neuladen eingeplant wurde; sie bestätigt nicht, dass jeder DNS-Server erreichbar ist.
+
+Die explizite DNS-Prüfung wird ebenfalls per `POST` gestartet und gibt für jeden aktivierten Resolver `working` oder `failed` zurück:
+
+```sh
+curl --user 'root' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=dns_check_servers' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
+
+Beispiel zum Hinzufügen eines aktivierten Servers:
+
+```sh
+curl --user 'root' \
+  --header 'X-IPFire-API: 1' \
+  --data-urlencode 'action=dns_add_server' \
+  --data-urlencode 'address=9.9.9.9' \
+  --data-urlencode 'tls_hostname=dns.quad9.net' \
+  --data-urlencode 'remark=Quad9' \
+  'https://<ipfire-host>:444/cgi-bin/api.cgi'
+```
 
 #### VLANs
 
